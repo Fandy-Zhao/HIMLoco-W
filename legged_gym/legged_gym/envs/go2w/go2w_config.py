@@ -133,7 +133,7 @@ class GO2WRoughCfg(LeggedRobotCfg):
         added_mass_range = [-1., 1.]
 
     class rewards(LeggedRobotCfg.rewards):
-        only_positive_rewards = False
+        only_positive_rewards = True
         tracking_sigma = 0.4
         soft_dof_pos_limit = 0.9
         soft_dof_vel_limit = 0.9
@@ -173,7 +173,7 @@ class GO2WRoughCfg(LeggedRobotCfg):
             reach_goal = 0.5
             finish_course = 0.0
             wheel_torque = 0.0
-            wheel_vel_smooth = -1e-4
+            wheel_vel_smooth = -1e-7
             wheel_slip = -0.03
 
 

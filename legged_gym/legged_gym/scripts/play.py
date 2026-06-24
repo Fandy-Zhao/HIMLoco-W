@@ -35,6 +35,7 @@ import isaacgym
 from legged_gym.envs import *
 from legged_gym.utils.cuda_compat import check_cuda_runtime_compat
 from legged_gym.utils import  get_args, export_policy_as_jit, task_registry, Logger
+from legged_gym.utils import webviewer
 
 import numpy as np
 import torch
@@ -58,6 +59,9 @@ def play(args, x_vel=1.0, y_vel=0.0, yaw_vel=0.0):
     # env_cfg.terrain.mesh_type = 'plane'
     # prepare environment
     env, _ = task_registry.make_env(name=args.task, args=args, env_cfg=env_cfg)
+    if args.web:
+        web_viewer = webviewer.WebViewer()
+        web_viewer.setup(env)
     env.commands[:, 0] = x_vel
     env.commands[:, 1] = y_vel
     env.commands[:, 2] = yaw_vel
@@ -92,6 +96,12 @@ def play(args, x_vel=1.0, y_vel=0.0, yaw_vel=0.0):
         env.commands[:, 1] = y_vel
         env.commands[:, 2] = yaw_vel
         obs, _, rews, dones, infos, _, _ = env.step(actions.detach())
+
+        if args.web:
+            web_viewer.render(fetch_results=True,
+                              step_graphics=True,
+                              render_all_camera_sensors=True,
+                              wait_for_page_load=True)
 
         if RECORD_FRAMES:
             if i % 2:

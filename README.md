@@ -35,7 +35,10 @@ We test our codes under the following environment:
   - Download and install Isaac Gym Preview 4 from https://developer.nvidia.com/isaac-gym
   - `cd isaacgym/python && pip install -e .`
 
-3. Clone this repository.
+3. Install optional web viewer dependencies:
+  - `pip install flask imageio`
+
+4. Clone this repository.
 
   - `git clone https://github.com/OpenRobotLab/HIMLoco.git`
   - `cd HIMLoco`
@@ -58,10 +61,29 @@ RTX 4090 GPUs require `sm_89` support. The original PyTorch `1.10.0+cu113` wheel
 
   - `cd legged_gym/legged_gym/scripts`
   - `python train.py`
+  - `python train.py --task go2w --headless --experiment_name go2w-stage0 --run_name 1 --stage 0 `
 
-2. Play and export the latest policy:
+2. Tensorboard:
+
+  - `cd /home/zhaozhuofan/test/HIMLoco-W/legged_gym`
+  - `tensorboard --logdir logs`
+
+3. Play and export the latest policy:
+
   - `cd legged_gym/legged_gym/scripts`
   - `python play.py`
+    - 默认会加载最新 checkpoint 并在 Isaac Gym 本地 viewer 中运行。
+  - `python play.py --web`
+    - 启动 Flask Web Viewer，在 `http://127.0.0.1:5000/` 打开浏览器查看。
+    - 如果为无头机器，可使用 VS Code Live Preview 或浏览器访问此地址。
+  - `python play.py --task go2w --load_run <run_name> --checkpoint <n>`
+    - 直接加载指定训练目录与 checkpoint。
+  - `python play.py --web --task go2w --load_run <run_name> --checkpoint <n>`
+    - 以 web 模式播放指定任务的已有模型。
+
+4. 如果需要导出 policy：
+
+  - `play.py` 内置会在首次运行时导出 JIT 模型到 `logs/<experiment_name>/exported/policies`。
 
 
 ## 🔗 Citation
