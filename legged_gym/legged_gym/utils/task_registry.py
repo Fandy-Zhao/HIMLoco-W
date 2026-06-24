@@ -30,7 +30,7 @@
 
 import os
 from datetime import datetime
-from typing import Tuple
+from typing import Tuple, Any
 import torch
 import numpy as np
 
@@ -39,7 +39,6 @@ from rsl_rl.runners import OnPolicyRunner, HIMOnPolicyRunner
 
 from legged_gym import LEGGED_GYM_ROOT_DIR, LEGGED_GYM_ENVS_DIR
 from .helpers import get_args, update_cfg_from_args, class_to_dict, get_load_path, set_seed, parse_sim_params
-from legged_gym.envs.base.legged_robot_config import LeggedRobotCfg, LeggedRobotCfgPPO
 
 class TaskRegistry():
     def __init__(self):
@@ -47,7 +46,7 @@ class TaskRegistry():
         self.env_cfgs = {}
         self.train_cfgs = {}
     
-    def register(self, name: str, task_class: VecEnv, env_cfg: LeggedRobotCfg, train_cfg: LeggedRobotCfgPPO):
+    def register(self, name: str, task_class: VecEnv, env_cfg: Any, train_cfg: Any):
         self.task_classes[name] = task_class
         self.env_cfgs[name] = env_cfg
         self.train_cfgs[name] = train_cfg
@@ -55,14 +54,14 @@ class TaskRegistry():
     def get_task_class(self, name: str) -> VecEnv:
         return self.task_classes[name]
     
-    def get_cfgs(self, name) -> Tuple[LeggedRobotCfg, LeggedRobotCfgPPO]:
+    def get_cfgs(self, name) -> Tuple[Any, Any]:
         train_cfg = self.train_cfgs[name]
         env_cfg = self.env_cfgs[name]
         # copy seed
         env_cfg.seed = train_cfg.seed
         return env_cfg, train_cfg
     
-    def make_env(self, name, args=None, env_cfg=None) -> Tuple[VecEnv, LeggedRobotCfg]:
+    def make_env(self, name, args=None, env_cfg=None) -> Tuple[VecEnv, Any]:
         """ Creates an environment either from a registered namme or from the provided config file.
 
         Args:
@@ -90,6 +89,8 @@ class TaskRegistry():
             env_cfg, _ = self.get_cfgs(name)
         # override cfg from args (if specified)
         env_cfg, _ = update_cfg_from_args(env_cfg, None, args)
+        if getattr(args, "stage", None) is not None:
+            env_cfg, _ = self.set_stage(env_cfg, None, args)
         set_seed(env_cfg.seed)
         # parse sim params (convert to dict first)
         sim_params = {"sim": class_to_dict(env_cfg.sim)}
@@ -101,7 +102,59 @@ class TaskRegistry():
                             headless=args.headless)
         return env, env_cfg
 
-    def make_alg_runner(self, env, name=None, args=None, train_cfg=None, log_root="default") -> Tuple[OnPolicyRunner, LeggedRobotCfgPPO]:
+    def set_stage(self, env_cfg, train_cfg, args):
+        stage = getattr(args, "stage", None)
+        if stage is None:
+            return env_cfg, train_cfg
+
+        unsupported_depth_stages = (3, 5)
+        if stage in unsupported_depth_stages:
+            raise NotImplementedError(
+                f"Parkour stage {stage} requires depth camera / depth_encoder support, "
+                "which has not been migrated to HIMLoco-W."
+            )
+
+        terrain_stage_props = {
+            0: {'parkour_flat': 1.0},
+            1: {'parkour_hurdle': 2.0, 'parkour_flat': 1.5, 'parkour_step': 1.0, 'parkour_gap': 1.0},
+            2: {
+                'parkour_hurdle': 0.8, 'parkour_flat': 0.2, 'parkour_step': 0.2, 'parkour_gap': 0.2,
+                'T_step_stl': 0.2, 'Slope': 0.2, 'BridgeA': 0.2, 'BridgeB': 0.2,
+            },
+            4: {'parkour_flat': 1.0},
+        }
+        train_iterations = {0: 7000, 1: 15000, 2: 10000, 4: 15000}
+        if stage not in terrain_stage_props:
+            raise ValueError(f"Unsupported parkour stage {stage}. Supported HIM-compatible stages are 0, 1, 2, and 4.")
+
+        if env_cfg is not None:
+            print("Set env learning stage to {}".format(stage))
+            env_cfg.terrain.terrain_proportions = [0.] * 8
+            extra_props = dict(getattr(env_cfg.terrain, 'terrain_extra_proportions', {}) or {})
+            for name in extra_props:
+                extra_props[name] = 0.
+            for name, value in terrain_stage_props[stage].items():
+                if name not in extra_props:
+                    raise KeyError(f"Stage {stage} terrain '{name}' is not defined in terrain_extra_proportions")
+                extra_props[name] = value
+            env_cfg.terrain.terrain_extra_proportions = extra_props
+
+            if stage == 4:
+                env_cfg.rewards.scales.tracking_goal_vel = 9
+                env_cfg.rewards.scales.lin_vel_z = -6
+                env_cfg.rewards.scales.ang_vel_xy = -0.3
+                env_cfg.rewards.scales.orientation = -10.0
+                env_cfg.rewards.tracking_sigma = 0.05
+                env_cfg.commands.ranges.lin_vel_x = [0.0, 0.8]
+
+        if train_cfg is not None:
+            print("Set train learning stage to {}".format(stage))
+            if getattr(args, "max_iterations", None) is None:
+                train_cfg.runner.max_iterations = train_iterations[stage]
+
+        return env_cfg, train_cfg
+
+    def make_alg_runner(self, env, name=None, args=None, train_cfg=None, log_root="default") -> Tuple[OnPolicyRunner, Any]:
         """ Creates the training algorithm  either from a registered namme or from the provided config file.
 
         Args:
@@ -134,6 +187,8 @@ class TaskRegistry():
                 print(f"'train_cfg' provided -> Ignoring 'name={name}'")
         # override cfg from args (if specified)
         _, train_cfg = update_cfg_from_args(None, train_cfg, args)
+        if getattr(args, "stage", None) is not None:
+            _, train_cfg = self.set_stage(None, train_cfg, args)
 
         if log_root=="default":
             log_root = os.path.join(LEGGED_GYM_ROOT_DIR, 'logs', train_cfg.runner.experiment_name)

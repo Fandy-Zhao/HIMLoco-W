@@ -30,11 +30,11 @@
 
 import os
 import copy
-import torch
 import numpy as np
 import random
 from isaacgym import gymapi
 from isaacgym import gymutil
+import torch
 import torch.nn.functional as F
 
 from legged_gym import LEGGED_GYM_ROOT_DIR, LEGGED_GYM_ENVS_DIR
@@ -167,6 +167,7 @@ def get_args():
         {"name": "--num_envs", "type": int, "help": "Number of environments to create. Overrides config file if provided."},
         {"name": "--seed", "type": int, "help": "Random seed. Overrides config file if provided."},
         {"name": "--max_iterations", "type": int, "help": "Maximum number of training iterations. Overrides config file if provided."},
+        {"name": "--stage", "type": int, "default": None, "help": "Parkour curriculum stage. Overrides supported terrain and training config fields if provided."},
     ]
     # parse arguments
     args = gymutil.parse_arguments(

@@ -32,4 +32,9 @@ from .helpers import class_to_dict, get_load_path, get_args, export_policy_as_ji
 from .task_registry import task_registry
 from .logger import Logger
 from .math import *
-from .terrain import Terrain
+
+def __getattr__(name):
+    if name == "Terrain":
+        from .terrain import Terrain
+        return Terrain
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
