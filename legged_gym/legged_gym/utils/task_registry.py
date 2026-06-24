@@ -116,7 +116,7 @@ class TaskRegistry():
 
         terrain_stage_props = {
             0: {'parkour_flat': 1.0},
-            1: {'parkour_hurdle': 2.0, 'parkour_flat': 1.5, 'parkour_step': 1.0, 'parkour_gap': 1.0},
+            1: {'parkour_hurdle': 2.0, 'parkour_flat': 2.5, 'parkour_step': 1.0, 'parkour_gap': 1.0},
             2: {
                 'parkour_hurdle': 0.8, 'parkour_flat': 0.2, 'parkour_step': 0.2, 'parkour_gap': 0.2,
                 'T_step_stl': 0.2, 'Slope': 0.2, 'BridgeA': 0.2, 'BridgeB': 0.2,

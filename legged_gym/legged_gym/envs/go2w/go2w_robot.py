@@ -19,9 +19,50 @@ class Go2w(LeggedRobot):
             wheel_names.extend([dof_name for dof_name in self.dof_names if name in dof_name])
         if not wheel_names:
             raise RuntimeError(f'No wheel joints matched {self.cfg.asset.wheel_name} in DOFs: {self.dof_names}')
+        self.wheel_dof_names = wheel_names
         self.wheel_indices = torch.zeros(len(wheel_names), dtype=torch.long, device=self.device, requires_grad=False)
         for i, name in enumerate(wheel_names):
             self.wheel_indices[i] = self.gym.find_actor_dof_handle(self.envs[0], self.actor_handles[0], name)
+        self.wheel_dof_indices = self.wheel_indices
+
+        wheel_dof_set = set(int(idx) for idx in self.wheel_dof_indices.detach().cpu().tolist())
+        self.leg_dof_names = [name for i, name in enumerate(self.dof_names) if i not in wheel_dof_set]
+        self.leg_dof_indices = torch.tensor(
+            [i for i in range(len(self.dof_names)) if i not in wheel_dof_set],
+            dtype=torch.long,
+            device=self.device,
+        )
+        if self.leg_dof_indices.numel() == 0:
+            raise RuntimeError(f'No leg joints remain after wheel DOF split. DOFs: {self.dof_names}, wheels: {wheel_names}')
+
+        rigid_body_names = self.gym.get_actor_rigid_body_names(self.envs[0], self.actor_handles[0])
+        self.body_names = rigid_body_names
+        wheel_body_names = []
+        for name in getattr(self.cfg.asset, 'wheel_body_name', self.cfg.asset.foot_name if isinstance(self.cfg.asset.foot_name, list) else [self.cfg.asset.foot_name]):
+            wheel_body_names.extend([body_name for body_name in rigid_body_names if name in body_name])
+        if not wheel_body_names:
+            wheel_body_names = [body_name for body_name in rigid_body_names if self.cfg.asset.foot_name in body_name]
+        if not wheel_body_names:
+            raise RuntimeError(f'No wheel bodies matched {self.cfg.asset.foot_name} in bodies: {rigid_body_names}')
+        self.wheel_body_names = wheel_body_names
+        self.wheel_body_indices = torch.zeros(len(wheel_body_names), dtype=torch.long, device=self.device, requires_grad=False)
+        for i, name in enumerate(wheel_body_names):
+            self.wheel_body_indices[i] = self.gym.find_actor_rigid_body_handle(self.envs[0], self.actor_handles[0], name)
+
+        wheel_body_set = set(int(idx) for idx in self.wheel_body_indices.detach().cpu().tolist())
+        leg_foot_names = [
+            name for i, name in enumerate(rigid_body_names)
+            if i not in wheel_body_set and ('foot' in name.lower() or 'calf' in name.lower())
+        ]
+        if not leg_foot_names:
+            leg_foot_names = [
+                name for i, name in enumerate(rigid_body_names)
+                if i not in wheel_body_set and ('thigh' in name.lower() or 'calf' in name.lower())
+            ]
+        self.leg_foot_names = leg_foot_names
+        self.leg_foot_indices = torch.zeros(len(leg_foot_names), dtype=torch.long, device=self.device, requires_grad=False)
+        for i, name in enumerate(leg_foot_names):
+            self.leg_foot_indices[i] = self.gym.find_actor_rigid_body_handle(self.envs[0], self.actor_handles[0], name)
 
     def _init_buffers(self):
         super()._init_buffers()
@@ -128,12 +169,22 @@ class Go2w(LeggedRobot):
 
     def _reward_base_height(self):
         base_height = torch.mean(self.root_states[:, 2].unsqueeze(1) - self.measured_heights, dim=1)
-        return torch.square(base_height - self.cfg.rewards.base_height_target)
+        reward = torch.square(base_height - self.cfg.rewards.base_height_target)
+        relaxed_mask = torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)
+        if hasattr(self, 'env_has_goals'):
+            relaxed_mask |= self.env_has_goals
+        for name in ['terrain_idx_Slope', 'terrain_idx_BridgeA', 'terrain_idx_BridgeB']:
+            if hasattr(self.cfg.terrain, name):
+                relaxed_mask |= self._terrain_is(getattr(self.cfg.terrain, name))
+        reward[relaxed_mask] *= 0.5
+        return reward
 
     def _reward_dof_vel(self):
-        dof_vel = self.dof_vel.clone()
-        dof_vel[:, self.wheel_indices] = 0.
-        return torch.sum(torch.square(dof_vel), dim=1)
+        if not hasattr(self, 'leg_dof_indices'):
+            dof_vel = self.dof_vel.clone()
+            dof_vel[:, self.wheel_indices] = 0.
+            return torch.sum(torch.square(dof_vel), dim=1)
+        return torch.sum(torch.square(self.dof_vel[:, self.leg_dof_indices]), dim=1)
 
     def _reward_feet_stumble(self):
         return torch.any(
@@ -143,8 +194,11 @@ class Go2w(LeggedRobot):
         )
 
     def _reward_stand_still(self):
-        dof_err = self.dof_pos - self.default_dof_pos
-        dof_err[:, self.wheel_indices] = 0.
+        if not hasattr(self, 'leg_dof_indices'):
+            dof_err = self.dof_pos - self.default_dof_pos
+            dof_err[:, self.wheel_indices] = 0.
+        else:
+            dof_err = self.dof_pos[:, self.leg_dof_indices] - self.default_dof_pos[:, self.leg_dof_indices]
         return torch.sum(torch.abs(dof_err), dim=1) * (torch.norm(self.commands[:, :2], dim=1) < 0.1)
 
     def _reward_hip_action_l2(self):

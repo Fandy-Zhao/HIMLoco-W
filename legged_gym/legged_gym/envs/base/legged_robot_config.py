@@ -220,6 +220,14 @@ class LeggedRobotCfg(BaseConfig):
             action_rate = -0.01
             stand_still = -0.
             tracking_goal_vel = 0.
+            tracking_goal_yaw = 0.
+            reach_goal = 0.
+            finish_course = 0.
+            wheel_torque = 0.
+            wheel_vel_smooth = 0.
+            wheel_slip = 0.
+            foot_clearance = 0.
+            feet_clearance = 0.
 
         only_positive_rewards = True # if true negative total rewards are clipped at zero (avoids early termination problems)
         tracking_sigma = 0.25 # tracking reward = exp(-error^2/sigma)
@@ -229,6 +237,9 @@ class LeggedRobotCfg(BaseConfig):
         base_height_target = 1.
         max_contact_force = 100. # forces above this value are penalized
         clearance_height_target = 0.09
+        wheel_torque_weight = 1.0
+        wheel_acc_weight = 1.0
+        wheel_action_rate_weight = 1.0
 
     class normalization:
         class obs_scales:

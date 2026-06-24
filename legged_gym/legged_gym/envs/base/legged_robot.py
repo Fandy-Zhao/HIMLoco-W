@@ -199,6 +199,8 @@ class LeggedRobot(BaseTask):
         self.last_last_actions[env_ids] = 0.
         self.last_dof_vel[env_ids] = 0.
         self.feet_air_time[env_ids] = 0.
+        if hasattr(self, 'leg_feet_air_time'):
+            self.leg_feet_air_time[env_ids] = 0.
         self.reset_buf[env_ids] = 1
 
         # update height measurements
@@ -496,6 +498,7 @@ class LeggedRobot(BaseTask):
         self.env_goals = torch.zeros(self.num_envs, goal_slots, 3, dtype=torch.float, device=self.device, requires_grad=False)
         self.cur_goal_idx = torch.zeros(self.num_envs, dtype=torch.long, device=self.device, requires_grad=False)
         self.reach_goal_timer = torch.zeros(self.num_envs, dtype=torch.float, device=self.device, requires_grad=False)
+        self.reached_goal = torch.zeros(self.num_envs, dtype=torch.bool, device=self.device, requires_grad=False)
         self.env_has_goals = torch.zeros(self.num_envs, dtype=torch.bool, device=self.device, requires_grad=False)
         self.target_yaw = torch.zeros(self.num_envs, dtype=torch.float, device=self.device, requires_grad=False)
         self.goal_yaw_error = torch.zeros(self.num_envs, dtype=torch.float, device=self.device, requires_grad=False)
@@ -533,6 +536,7 @@ class LeggedRobot(BaseTask):
         env_ids = env_ids.to(device=self.device, dtype=torch.long)
         self.cur_goal_idx[env_ids] = 0
         self.reach_goal_timer[env_ids] = 0.
+        self.reached_goal[env_ids] = False
         self._refresh_env_goals(env_ids)
 
     def _gather_current_goals(self, future=0):
@@ -548,6 +552,7 @@ class LeggedRobot(BaseTask):
             return
         current_goals = self._gather_current_goals()
         reached = active & (torch.norm(self.root_states[:, :2] - current_goals[:, :2], dim=1) < self.cfg.terrain.next_goal_threshold)
+        self.reached_goal[:] = reached
         self.reach_goal_timer[reached] += 1
         self.reach_goal_timer[active & ~reached] = 0
         delay_steps = max(1.0, float(self.cfg.terrain.reach_goal_delay) / self.dt)
@@ -807,6 +812,9 @@ class LeggedRobot(BaseTask):
         self._init_goal_buffers()
         self.feet_air_time = torch.zeros(self.num_envs, self.feet_indices.shape[0], dtype=torch.float, device=self.device, requires_grad=False)
         self.last_contacts = torch.zeros(self.num_envs, len(self.feet_indices), dtype=torch.bool, device=self.device, requires_grad=False)
+        if hasattr(self, 'leg_foot_indices') and self.leg_foot_indices.numel() > 0:
+            self.leg_feet_air_time = torch.zeros(self.num_envs, self.leg_foot_indices.shape[0], dtype=torch.float, device=self.device, requires_grad=False)
+            self.leg_last_contacts = torch.zeros(self.num_envs, len(self.leg_foot_indices), dtype=torch.bool, device=self.device, requires_grad=False)
         self.base_lin_vel = quat_rotate_inverse(self.base_quat, self.root_states[:, 7:10])
         self.base_ang_vel = quat_rotate_inverse(self.base_quat, self.root_states[:, 10:13])
         self.projected_gravity = quat_rotate_inverse(self.base_quat, self.gravity_vec)
@@ -1254,19 +1262,83 @@ class LeggedRobot(BaseTask):
     #------------ reward functions----------------
 
     def _reward_tracking_goal_vel(self):
-        if not hasattr(self, 'env_has_goals'):
+        if not hasattr(self, 'env_goals') or not hasattr(self, 'cur_goal_idx'):
             return torch.zeros(self.num_envs, dtype=torch.float, device=self.device)
-        goal_vec = self.target_pos_rel
-        norm = torch.clamp(torch.norm(goal_vec, dim=-1, keepdim=True), min=1e-5)
-        goal_dir = goal_vec / norm
-        proj_vel = torch.sum(goal_dir * self.root_states[:, 7:9], dim=-1)
-        rew = torch.clamp(proj_vel, min=0.)
-        return torch.where(self.env_has_goals, rew, torch.zeros_like(rew))
+
+        env_ids = torch.arange(self.num_envs, device=self.device)
+        cur_goal = self.env_goals[env_ids, self.cur_goal_idx]
+        target_vec = cur_goal[:, :2] - self.root_states[:, :2]
+        target_dir = target_vec / (torch.norm(target_vec, dim=1, keepdim=True) + 1e-6)
+        vel_to_goal = torch.sum(target_dir * self.root_states[:, 7:9], dim=1)
+        reward = torch.clamp(vel_to_goal, min=0.0)
+
+        if hasattr(self, 'env_has_goals'):
+            reward[~self.env_has_goals] = 0.0
+        return reward
+
+    def _reward_tracking_goal_yaw(self):
+        if not hasattr(self, 'goal_yaw_error'):
+            return torch.zeros(self.num_envs, dtype=torch.float, device=self.device)
+        reward = torch.exp(-torch.abs(self.goal_yaw_error))
+        if hasattr(self, 'env_has_goals'):
+            reward[~self.env_has_goals] = 0.0
+        return reward
+
+    def _reward_reach_goal(self):
+        if not hasattr(self, 'reached_goal'):
+            return torch.zeros(self.num_envs, dtype=torch.float, device=self.device)
+        reward = self.reached_goal.float()
+        if hasattr(self, 'env_has_goals'):
+            reward[~self.env_has_goals] = 0.0
+        return reward
+
+    def _reward_finish_course(self):
+        if not hasattr(self, 'cur_goal_idx') or not hasattr(self, 'reached_goal') or not hasattr(self.cfg.terrain, 'num_goals'):
+            return torch.zeros(self.num_envs, dtype=torch.float, device=self.device)
+        final_goal_reached = (self.cur_goal_idx >= self.cfg.terrain.num_goals - 1) & self.reached_goal
+        reward = final_goal_reached.float()
+        if hasattr(self, 'env_has_goals'):
+            reward[~self.env_has_goals] = 0.0
+        return reward
+
+    def _mask_invalid_terrain_reward(self, reward):
+        if hasattr(self, 'env_terrain_idx'):
+            reward[self.env_terrain_idx < 0] = 0.0
+        return reward
+
+    def _reward_wheel_torque(self):
+        if not hasattr(self, 'wheel_dof_indices'):
+            return torch.zeros(self.num_envs, dtype=torch.float, device=self.device)
+        wheel_torque = self.torques[:, self.wheel_dof_indices]
+        reward = torch.sum(torch.square(wheel_torque), dim=1)
+        return self._mask_invalid_terrain_reward(reward)
+
+    def _reward_wheel_vel_smooth(self):
+        if not hasattr(self, 'wheel_dof_indices') or not hasattr(self, 'last_dof_vel'):
+            return torch.zeros(self.num_envs, dtype=torch.float, device=self.device)
+        wheel_vel = self.dof_vel[:, self.wheel_dof_indices]
+        last_wheel_vel = self.last_dof_vel[:, self.wheel_dof_indices]
+        wheel_acc = (wheel_vel - last_wheel_vel) / self.dt
+        reward = torch.sum(torch.square(wheel_acc), dim=1)
+        return self._mask_invalid_terrain_reward(reward)
+
+    def _reward_wheel_slip(self):
+        if not hasattr(self, 'wheel_body_indices') or not hasattr(self, 'rigid_body_states'):
+            return torch.zeros(self.num_envs, dtype=torch.float, device=self.device)
+        wheel_contact = self.contact_forces[:, self.wheel_body_indices, 2] > 1.0
+        rigid_body_state = self.rigid_body_states.view(self.num_envs, self.num_bodies, 13)
+        wheel_xy_vel = rigid_body_state[:, self.wheel_body_indices, 7:9]
+        slip_speed = torch.norm(wheel_xy_vel, dim=-1)
+        reward = torch.sum(slip_speed * wheel_contact.float(), dim=1)
+        return self._mask_invalid_terrain_reward(reward)
 
     def _reward_tracking_lin_vel(self):
         # Tracking of linear velocity commands (xy axes)
         lin_vel_error = torch.sum(torch.square(self.commands[:, :2] - self.base_lin_vel[:, :2]), dim=1)
-        return torch.exp(-lin_vel_error/self.cfg.rewards.tracking_sigma)
+        reward = torch.exp(-lin_vel_error/self.cfg.rewards.tracking_sigma)
+        if hasattr(self, 'env_has_goals'):
+            reward[self.env_has_goals] *= 0.2
+        return reward
     
     def _reward_tracking_ang_vel(self):
         # Tracking of angular velocity commands (yaw) 
@@ -1287,23 +1359,60 @@ class LeggedRobot(BaseTask):
     
     def _reward_dof_acc(self):
         # Penalize dof accelerations
-        return torch.sum(torch.square((self.last_dof_vel - self.dof_vel) / self.dt), dim=1)
+        dof_acc = (self.last_dof_vel - self.dof_vel) / self.dt
+        if not hasattr(self, 'leg_dof_indices') or not hasattr(self, 'wheel_dof_indices'):
+            return torch.sum(torch.square(dof_acc), dim=1)
+        leg_acc = dof_acc[:, self.leg_dof_indices]
+        wheel_acc = dof_acc[:, self.wheel_dof_indices]
+        reward = torch.sum(torch.square(leg_acc), dim=1)
+        if wheel_acc.numel() > 0:
+            reward = reward + self.cfg.rewards.wheel_acc_weight * torch.sum(torch.square(wheel_acc), dim=1)
+        return reward
     
     def _reward_joint_power(self):
         #Penalize high power
-        return torch.sum(torch.abs(self.dof_vel) * torch.abs(self.torques), dim=1)
+        power = torch.abs(self.dof_vel) * torch.abs(self.torques)
+        if not hasattr(self, 'leg_dof_indices') or not hasattr(self, 'wheel_dof_indices'):
+            return torch.sum(power, dim=1)
+        leg_power = power[:, self.leg_dof_indices]
+        wheel_power = power[:, self.wheel_dof_indices]
+        reward = torch.sum(leg_power, dim=1)
+        if wheel_power.numel() > 0:
+            reward = reward + self.cfg.rewards.wheel_torque_weight * torch.sum(wheel_power, dim=1)
+        return reward
 
     def _reward_base_height(self):
         # Penalize base height away from target
         base_height = self._get_base_heights()
-        return torch.square(base_height - self.cfg.rewards.base_height_target)
+        reward = torch.square(base_height - self.cfg.rewards.base_height_target)
+        relaxed_mask = torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)
+        if hasattr(self, 'env_has_goals'):
+            relaxed_mask |= self.env_has_goals
+        for name in ['terrain_idx_Slope', 'terrain_idx_BridgeA', 'terrain_idx_BridgeB']:
+            if hasattr(self.cfg.terrain, name):
+                relaxed_mask |= self._terrain_is(getattr(self.cfg.terrain, name))
+        reward[relaxed_mask] *= 0.5
+        return reward
     
+    def _get_reward_feet_body_indices(self):
+        if hasattr(self, 'leg_foot_indices') and self.leg_foot_indices.numel() > 0:
+            return self.leg_foot_indices
+        return self.feet_indices
+
+    def _get_reward_feet_state(self):
+        feet_body_indices = self._get_reward_feet_body_indices()
+        if hasattr(self, 'leg_foot_indices') and feet_body_indices is self.leg_foot_indices:
+            rigid_body_state = self.rigid_body_states.view(self.num_envs, self.num_bodies, 13)
+            return rigid_body_state[:, feet_body_indices, 0:3], rigid_body_state[:, feet_body_indices, 7:10]
+        return self.feet_pos, self.feet_vel
+
     def _reward_foot_clearance(self):
-        cur_footpos_translated = self.feet_pos - self.root_states[:, 0:3].unsqueeze(1)
-        footpos_in_body_frame = torch.zeros(self.num_envs, len(self.feet_indices), 3, device=self.device)
-        cur_footvel_translated = self.feet_vel - self.root_states[:, 7:10].unsqueeze(1)
-        footvel_in_body_frame = torch.zeros(self.num_envs, len(self.feet_indices), 3, device=self.device)
-        for i in range(len(self.feet_indices)):
+        feet_pos, feet_vel = self._get_reward_feet_state()
+        cur_footpos_translated = feet_pos - self.root_states[:, 0:3].unsqueeze(1)
+        footpos_in_body_frame = torch.zeros(self.num_envs, feet_pos.shape[1], 3, device=self.device)
+        cur_footvel_translated = feet_vel - self.root_states[:, 7:10].unsqueeze(1)
+        footvel_in_body_frame = torch.zeros(self.num_envs, feet_pos.shape[1], 3, device=self.device)
+        for i in range(feet_pos.shape[1]):
             footpos_in_body_frame[:, i, :] = quat_rotate_inverse(self.base_quat, cur_footpos_translated[:, i, :])
             footvel_in_body_frame[:, i, :] = quat_rotate_inverse(self.base_quat, cur_footvel_translated[:, i, :])
         
@@ -1313,19 +1422,45 @@ class LeggedRobot(BaseTask):
     
     def _reward_action_rate(self):
         # Penalize changes in actions
-        return torch.sum(torch.square(self.last_actions - self.actions), dim=1)
+        action_rate = self.last_actions - self.actions
+        if not hasattr(self, 'leg_dof_indices') or not hasattr(self, 'wheel_dof_indices'):
+            return torch.sum(torch.square(action_rate), dim=1)
+        leg_action_rate = action_rate[:, self.leg_dof_indices]
+        wheel_action_rate = action_rate[:, self.wheel_dof_indices]
+        reward = torch.sum(torch.square(leg_action_rate), dim=1)
+        if wheel_action_rate.numel() > 0:
+            reward = reward + self.cfg.rewards.wheel_action_rate_weight * torch.sum(torch.square(wheel_action_rate), dim=1)
+        return reward
     
     def _reward_smoothness(self):
         # second order smoothness
-        return torch.sum(torch.square(self.actions - self.last_actions - self.last_actions + self.last_last_actions), dim=1)
+        action_delta = self.actions - self.last_actions - self.last_actions + self.last_last_actions
+        if not hasattr(self, 'leg_dof_indices') or not hasattr(self, 'wheel_dof_indices'):
+            return torch.sum(torch.square(action_delta), dim=1)
+        leg_delta = action_delta[:, self.leg_dof_indices]
+        wheel_delta = action_delta[:, self.wheel_dof_indices]
+        reward = torch.sum(torch.square(leg_delta), dim=1)
+        if wheel_delta.numel() > 0:
+            reward = reward + self.cfg.rewards.wheel_action_rate_weight * torch.sum(torch.square(wheel_delta), dim=1)
+        return reward
     
     def _reward_torques(self):
         # Penalize torques
-        return torch.sum(torch.square(self.torques), dim=1)
+        if not hasattr(self, 'leg_dof_indices') or not hasattr(self, 'wheel_dof_indices'):
+            return torch.sum(torch.square(self.torques), dim=1)
+        leg_torque = self.torques[:, self.leg_dof_indices]
+        wheel_torque = self.torques[:, self.wheel_dof_indices]
+        reward = torch.sum(torch.square(leg_torque), dim=1)
+        if wheel_torque.numel() > 0:
+            reward = reward + self.cfg.rewards.wheel_torque_weight * torch.sum(torch.square(wheel_torque), dim=1)
+        return reward
 
     def _reward_dof_vel(self):
         # Penalize dof velocities
-        return torch.sum(torch.square(self.dof_vel), dim=1)
+        if not hasattr(self, 'leg_dof_indices'):
+            return torch.sum(torch.square(self.dof_vel), dim=1)
+        leg_dof_vel = self.dof_vel[:, self.leg_dof_indices]
+        return torch.sum(torch.square(leg_dof_vel), dim=1)
     
     def _reward_collision(self):
         # Penalize collisions on selected bodies
@@ -1337,41 +1472,75 @@ class LeggedRobot(BaseTask):
     
     def _reward_dof_pos_limits(self):
         # Penalize dof positions too close to the limit
-        out_of_limits = -(self.dof_pos - self.dof_pos_limits[:, 0]).clip(max=0.) # lower limit
-        out_of_limits += (self.dof_pos - self.dof_pos_limits[:, 1]).clip(min=0.)
+        if not hasattr(self, 'leg_dof_indices'):
+            out_of_limits = -(self.dof_pos - self.dof_pos_limits[:, 0]).clip(max=0.) # lower limit
+            out_of_limits += (self.dof_pos - self.dof_pos_limits[:, 1]).clip(min=0.)
+            return torch.sum(out_of_limits, dim=1)
+        leg_pos = self.dof_pos[:, self.leg_dof_indices]
+        leg_limits = self.dof_pos_limits[self.leg_dof_indices]
+        out_of_limits = -(leg_pos - leg_limits[:, 0]).clip(max=0.)
+        out_of_limits += (leg_pos - leg_limits[:, 1]).clip(min=0.)
         return torch.sum(out_of_limits, dim=1)
 
     def _reward_dof_vel_limits(self):
         # Penalize dof velocities too close to the limit
         # clip to max error = 1 rad/s per joint to avoid huge penalties
-        return torch.sum((torch.abs(self.dof_vel) - self.dof_vel_limits*self.cfg.rewards.soft_dof_vel_limit).clip(min=0., max=1.), dim=1)
+        if not hasattr(self, 'leg_dof_indices'):
+            return torch.sum((torch.abs(self.dof_vel) - self.dof_vel_limits*self.cfg.rewards.soft_dof_vel_limit).clip(min=0., max=1.), dim=1)
+        leg_dof_vel = self.dof_vel[:, self.leg_dof_indices]
+        leg_dof_vel_limits = self.dof_vel_limits[self.leg_dof_indices]
+        return torch.sum((torch.abs(leg_dof_vel) - leg_dof_vel_limits*self.cfg.rewards.soft_dof_vel_limit).clip(min=0., max=1.), dim=1)
 
     def _reward_torque_limits(self):
         # penalize torques too close to the limit
-        return torch.sum((torch.abs(self.torques) - self.torque_limits*self.cfg.rewards.soft_torque_limit).clip(min=0.), dim=1)
+        if not hasattr(self, 'leg_dof_indices') or not hasattr(self, 'wheel_dof_indices'):
+            return torch.sum((torch.abs(self.torques) - self.torque_limits*self.cfg.rewards.soft_torque_limit).clip(min=0.), dim=1)
+        leg_torques = self.torques[:, self.leg_dof_indices]
+        leg_limits = self.torque_limits[self.leg_dof_indices]
+        reward = torch.sum((torch.abs(leg_torques) - leg_limits*self.cfg.rewards.soft_torque_limit).clip(min=0.), dim=1)
+        wheel_torques = self.torques[:, self.wheel_dof_indices]
+        wheel_limits = self.torque_limits[self.wheel_dof_indices]
+        if wheel_torques.numel() > 0:
+            reward = reward + self.cfg.rewards.wheel_torque_weight * torch.sum((torch.abs(wheel_torques) - wheel_limits*self.cfg.rewards.soft_torque_limit).clip(min=0.), dim=1)
+        return reward
 
     def _reward_feet_air_time(self):
         # Reward long steps
         # Need to filter the contacts because the contact reporting of PhysX is unreliable on meshes
-        contact = self.contact_forces[:, self.feet_indices, 2] > 1.
-        contact_filt = torch.logical_or(contact, self.last_contacts) 
-        self.last_contacts = contact
-        first_contact = (self.feet_air_time > 0.) * contact_filt
-        self.feet_air_time += self.dt
-        rew_airTime = torch.sum((self.feet_air_time - 0.5) * first_contact, dim=1) # reward only on first contact with the ground
+        feet_body_indices = self._get_reward_feet_body_indices()
+        contact = self.contact_forces[:, feet_body_indices, 2] > 1.
+        if hasattr(self, 'leg_foot_indices') and feet_body_indices is self.leg_foot_indices:
+            contact_filt = torch.logical_or(contact, self.leg_last_contacts)
+            self.leg_last_contacts = contact
+            first_contact = (self.leg_feet_air_time > 0.) * contact_filt
+            self.leg_feet_air_time += self.dt
+            rew_airTime = torch.sum((self.leg_feet_air_time - 0.5) * first_contact, dim=1)
+            self.leg_feet_air_time *= ~contact_filt
+        else:
+            contact_filt = torch.logical_or(contact, self.last_contacts)
+            self.last_contacts = contact
+            first_contact = (self.feet_air_time > 0.) * contact_filt
+            self.feet_air_time += self.dt
+            rew_airTime = torch.sum((self.feet_air_time - 0.5) * first_contact, dim=1)
+            self.feet_air_time *= ~contact_filt
         rew_airTime *= torch.norm(self.commands[:, :2], dim=1) > 0.1 #no reward for zero command
-        self.feet_air_time *= ~contact_filt
         return rew_airTime
     
     def _reward_stumble(self):
         # Penalize feet hitting vertical surfaces
-        return torch.any(torch.norm(self.contact_forces[:, self.feet_indices, :2], dim=2) >\
-             5 *torch.abs(self.contact_forces[:, self.feet_indices, 2]), dim=1)
+        feet_body_indices = self._get_reward_feet_body_indices()
+        return torch.any(torch.norm(self.contact_forces[:, feet_body_indices, :2], dim=2) >\
+             5 *torch.abs(self.contact_forces[:, feet_body_indices, 2]), dim=1)
         
     def _reward_stand_still(self):
         # Penalize motion at zero commands
-        return torch.sum(torch.abs(self.dof_pos - self.default_dof_pos), dim=1) * (torch.norm(self.commands[:, :2], dim=1) < 0.1)
+        if not hasattr(self, 'leg_dof_indices'):
+            dof_error = torch.abs(self.dof_pos - self.default_dof_pos)
+        else:
+            dof_error = torch.abs(self.dof_pos[:, self.leg_dof_indices] - self.default_dof_pos[:, self.leg_dof_indices])
+        return torch.sum(dof_error, dim=1) * (torch.norm(self.commands[:, :2], dim=1) < 0.1)
 
     def _reward_feet_contact_forces(self):
         # penalize high contact forces
-        return torch.sum((torch.norm(self.contact_forces[:, self.feet_indices, :], dim=-1) -  self.cfg.rewards.max_contact_force).clip(min=0.), dim=1)
+        feet_body_indices = self._get_reward_feet_body_indices()
+        return torch.sum((torch.norm(self.contact_forces[:, feet_body_indices, :], dim=-1) -  self.cfg.rewards.max_contact_force).clip(min=0.), dim=1)

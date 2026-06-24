@@ -51,7 +51,7 @@ class GO2WRoughCfg(LeggedRobotCfg):
         num_cols = 20
         terrain_proportions = [0, 0, 0, 0, 0, 0, 0, 0]
         terrain_extra_proportions = {
-            'parkour': 1.0,
+            'parkour': .0,
             'parkour_hurdle': 0.,
             'parkour_flat': 0.,
             'parkour_step': 0.,
@@ -133,29 +133,35 @@ class GO2WRoughCfg(LeggedRobotCfg):
         added_mass_range = [-1., 1.]
 
     class rewards(LeggedRobotCfg.rewards):
-        only_positive_rewards = True
+        only_positive_rewards = False
         tracking_sigma = 0.4
         soft_dof_pos_limit = 0.9
         soft_dof_vel_limit = 0.9
         soft_torque_limit = 1.
         base_height_target = 0.34
         max_contact_force = 100.
+        wheel_torque_weight = 0.5
+        wheel_acc_weight = 0.2
+        wheel_action_rate_weight = 0.5
 
         class scales(LeggedRobotCfg.rewards.scales):
             termination = -0.8
-            tracking_lin_vel = 4.0
-            tracking_ang_vel = 2.0
-            lin_vel_z = -0.1
+            tracking_lin_vel = 1.0
+            tracking_ang_vel = 0.5
+            lin_vel_z = -2.0
             ang_vel_xy = -0.05
-            orientation = -2.0
-            torques = -0.0001
-            dof_vel = -1e-7
-            dof_acc = -1e-7
+            orientation = -1.0
+            torques = -1e-5
+            dof_vel = -1e-4
+            dof_acc = -2.5e-7
             base_height = -0.5
             feet_air_time = 0.0
-            collision = -0.1
-            feet_stumble = -0.1
-            action_rate = -0.0002
+            foot_clearance = 0.0
+            feet_clearance = 0.0
+            collision = -0.5
+            feet_stumble = 0.0
+            stumble = 0.0
+            action_rate = -0.01
             stand_still = -0.01
             dof_pos_limits = -0.9
             dof_vel_limits = -0.0
@@ -163,6 +169,12 @@ class GO2WRoughCfg(LeggedRobotCfg):
             arm_pos = -0.0
             hip_action_l2 = -0.1
             tracking_goal_vel = 1.0
+            tracking_goal_yaw = 0.3
+            reach_goal = 0.5
+            finish_course = 0.0
+            wheel_torque = 0.0
+            wheel_vel_smooth = -1e-4
+            wheel_slip = -0.03
 
 
 class GO2WRoughCfgPPO(LeggedRobotCfgPPO):
