@@ -35,6 +35,13 @@ import numpy as np
 import os
 
 from isaacgym.torch_utils import *
+from legged_gym.utils.torch_compat import (
+    get_axis_params,
+    quat_apply,
+    quat_rotate_inverse,
+    to_torch,
+    torch_rand_float,
+)
 from isaacgym import gymtorch, gymapi, gymutil
 
 import torch
