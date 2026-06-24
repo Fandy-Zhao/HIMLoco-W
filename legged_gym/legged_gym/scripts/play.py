@@ -33,6 +33,7 @@ import os
 
 import isaacgym
 from legged_gym.envs import *
+from legged_gym.utils.cuda_compat import check_cuda_runtime_compat
 from legged_gym.utils import  get_args, export_policy_as_jit, task_registry, Logger
 
 import numpy as np
@@ -40,6 +41,7 @@ import torch
 
 
 def play(args, x_vel=1.0, y_vel=0.0, yaw_vel=0.0):
+    check_cuda_runtime_compat()
     env_cfg, train_cfg = task_registry.get_cfgs(name=args.task)
     # override some parameters for testing
     env_cfg.env.num_envs = min(env_cfg.env.num_envs, 50)

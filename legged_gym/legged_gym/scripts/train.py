@@ -34,10 +34,12 @@ from datetime import datetime
 
 import isaacgym
 from legged_gym.envs import *
+from legged_gym.utils.cuda_compat import check_cuda_runtime_compat
 from legged_gym.utils import get_args, task_registry
 import torch
 
 def train(args, headless=True):
+    check_cuda_runtime_compat()
     args.headless = headless
     args.resume = False
     env, env_cfg = task_registry.make_env(name=args.task, args=args)

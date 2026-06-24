@@ -66,6 +66,13 @@ class LeggedRobotCfg(BaseConfig):
         terrain_proportions = [0.1, 0.2, 0.3, 0.3, 0.1]
         # trimesh only:
         slope_treshold = 0.75 # slopes above this threshold will be corrected to vertical surfaces
+        use_parkour_goals = False
+        num_goals = 8
+        num_future_goal_obs = 2
+        next_goal_threshold = 0.2
+        reach_goal_delay = 0.1
+        terminate_after_reaching_final_goal = False
+        parkour_terrain_proportions = [0.2, 0.2, 0.2, 0.2, 0.2]
 
     class commands:
         curriculum = True
@@ -73,6 +80,10 @@ class LeggedRobotCfg(BaseConfig):
         num_commands = 4 # default: lin_vel_x, lin_vel_y, ang_vel_yaw, heading (in heading mode ang_vel_yaw is recomputed from heading error)
         resampling_time = 10. # time before command are changed[s]
         heading_command = True # if true: compute ang vel command from heading error
+        use_goal_yaw_command = False
+        goal_yaw_fallback_random = True
+        goal_yaw_kp = 0.5
+        goal_yaw_rate_clip = 2.0
         class ranges:
             lin_vel_x = [-1.0, 1.0] # min max [m/s]
             lin_vel_y = [-1.0, 1.0]   # min max [m/s]
@@ -176,6 +187,7 @@ class LeggedRobotCfg(BaseConfig):
             feet_stumble = -0.0 
             action_rate = -0.01
             stand_still = -0.
+            tracking_goal_vel = 0.
 
         only_positive_rewards = True # if true negative total rewards are clipped at zero (avoids early termination problems)
         tracking_sigma = 0.25 # tracking reward = exp(-error^2/sigma)

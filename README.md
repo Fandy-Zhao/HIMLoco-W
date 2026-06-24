@@ -47,6 +47,11 @@ We test our codes under the following environment:
 
 **Note:** Please use legged_gym and rsl_rl provided in this repo, we have modefications on these repos.
 
+
+### RTX 4090 / PyTorch compatibility
+
+RTX 4090 GPUs require `sm_89` support. The original PyTorch `1.10.0+cu113` wheel can import on some systems but is not a reliable runtime for RTX 4090 training. Use an upgraded `hw` conda environment, preferably PyTorch `1.13.1+cu117` first, or PyTorch `2.0.1+cu118` if Isaac Gym is verified in that environment. The training and play entrypoints call `legged_gym.utils.cuda_compat.check_cuda_runtime_compat()` and fail early with an actionable message when RTX 4090 is paired with PyTorch 1.10. `TORCH_CUDA_ARCH_LIST` defaults to `8.9` for extension builds.
+
 ### Tutorial
 
 1. Train a policy:

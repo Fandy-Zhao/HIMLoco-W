@@ -19,6 +19,10 @@ class GO2WRoughCfg(LeggedRobotCfg):
         num_commands = 4
         resampling_time = 10.
         heading_command = False
+        use_goal_yaw_command = True
+        goal_yaw_fallback_random = True
+        goal_yaw_kp = 0.5
+        goal_yaw_rate_clip = 2.0
 
         class ranges(LeggedRobotCfg.commands.ranges):
             lin_vel_x = [0, 2]
@@ -47,6 +51,13 @@ class GO2WRoughCfg(LeggedRobotCfg):
         num_cols = 20
         terrain_proportions = [0, 0, 1.0, 0, 0]
         slope_treshold = 0.75
+        use_parkour_goals = True
+        num_goals = 8
+        num_future_goal_obs = 2
+        next_goal_threshold = 0.2
+        reach_goal_delay = 0.1
+        terminate_after_reaching_final_goal = False
+        parkour_terrain_proportions = [0.2, 0.2, 0.2, 0.2, 0.2]
 
     class init_state(LeggedRobotCfg.init_state):
         pos = [0.0, 0.0, 0.5]
@@ -140,6 +151,7 @@ class GO2WRoughCfg(LeggedRobotCfg):
             torque_limits = -0.0
             arm_pos = -0.0
             hip_action_l2 = -0.1
+            tracking_goal_vel = 1.0
 
 
 class GO2WRoughCfgPPO(LeggedRobotCfgPPO):

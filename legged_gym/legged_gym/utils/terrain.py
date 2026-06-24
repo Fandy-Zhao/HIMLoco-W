@@ -41,6 +41,8 @@ class Terrain:
         self.cfg = cfg
         self.num_robots = num_robots
         self.type = cfg.mesh_type
+        self.num_goals = int(getattr(cfg, 'num_goals', 0))
+        self.goals = np.zeros((cfg.num_rows, cfg.num_cols, max(self.num_goals, 0), 3), dtype=np.float32)
         if self.type in ["none", 'plane']:
             return
         self.env_length = cfg.terrain_length
@@ -120,6 +122,8 @@ class Terrain:
         stone_distance = 0.05 if difficulty==0 else 0.1
         gap_size = 1. * difficulty
         pit_depth = 1. * difficulty
+        if getattr(self.cfg, 'use_parkour_goals', False):
+            return self.make_parkour_terrain(terrain, choice, difficulty)
         if choice < self.proportions[0]:
             if choice < self.proportions[0]/ 2:
                 slope *= -1
@@ -145,6 +149,42 @@ class Terrain:
         
         return terrain
 
+
+    def make_parkour_terrain(self, terrain, choice, difficulty):
+        proportions = getattr(self.cfg, 'parkour_terrain_proportions', [0.2, 0.2, 0.2, 0.2, 0.2])
+        if len(proportions) == 0:
+            proportions = [1.0]
+        proportions = np.asarray(proportions, dtype=np.float64)
+        proportions = proportions / max(np.sum(proportions), 1e-8)
+        cumulative = np.cumsum(proportions)
+        num_goals = max(int(getattr(self.cfg, 'num_goals', self.num_goals)), 2)
+        num_inner = max(num_goals - 2, 1)
+        if choice < cumulative[0]:
+            parkour_flat_terrain(terrain, num_goals=num_goals, difficulty=difficulty)
+        elif len(cumulative) > 1 and choice < cumulative[1]:
+            parkour_hurdle_terrain(terrain, num_goals=num_goals, num_hurdles=num_inner, difficulty=difficulty)
+        elif len(cumulative) > 2 and choice < cumulative[2]:
+            parkour_gap_terrain(terrain, num_goals=num_goals, num_gaps=num_inner, difficulty=difficulty)
+        elif len(cumulative) > 3 and choice < cumulative[3]:
+            parkour_step_terrain(terrain, num_goals=num_goals, num_steps=num_inner, difficulty=difficulty)
+        else:
+            parkour_stair_terrain(terrain, num_goals=num_goals, num_steps=num_inner, difficulty=difficulty)
+        return terrain
+
+    def _normalized_terrain_goals(self, terrain):
+        if self.num_goals <= 0:
+            return np.zeros((0, 3), dtype=np.float32)
+        fallback = straight_goal_line(terrain, self.num_goals)
+        goals = getattr(terrain, 'goals', fallback)
+        goals = np.asarray(goals, dtype=np.float32)
+        if goals.ndim != 2 or goals.shape[0] == 0 or goals.shape[1] not in (2, 3) or not np.all(np.isfinite(goals)):
+            goals = fallback
+        elif goals.shape[1] == 2:
+            goals = np.pad(goals, ((0, 0), (0, 1)), mode='constant')
+        if goals.shape[0] < self.num_goals:
+            goals = np.concatenate((goals, np.repeat(goals[-1:], self.num_goals - goals.shape[0], axis=0)), axis=0)
+        return goals[:self.num_goals].astype(np.float32)
+
     def add_terrain_to_map(self, terrain, row, col):
         i = row
         j = col
@@ -163,6 +203,8 @@ class Terrain:
         y2 = int((self.env_width/2. + 1) / terrain.horizontal_scale)
         env_origin_z = np.max(terrain.height_field_raw[x1:x2, y1:y2])*terrain.vertical_scale
         self.env_origins[i, j] = [env_origin_x, env_origin_y, env_origin_z]
+        if self.num_goals > 0:
+            self.goals[i, j, :, :] = self._normalized_terrain_goals(terrain) + np.array([i * self.env_length, j * self.env_width, 0.], dtype=np.float32)
 
 def gap_terrain(terrain, gap_size, platform_size=1.):
     gap_size = int(gap_size / terrain.horizontal_scale)
@@ -186,3 +228,89 @@ def pit_terrain(terrain, depth, platform_size=1.):
     y1 = terrain.width // 2 - platform_size
     y2 = terrain.width // 2 + platform_size
     terrain.height_field_raw[x1:x2, y1:y2] = -depth
+
+
+def _meters_to_px(terrain, value):
+    return max(1, int(round(value / terrain.horizontal_scale)))
+
+def _meters_to_height(terrain, value):
+    return int(round(value / terrain.vertical_scale))
+
+def straight_goal_line(terrain, num_goals):
+    num_goals = max(int(num_goals), 1)
+    start_x = terrain.length * terrain.horizontal_scale * 0.5 + 0.5
+    end_x = terrain.length * terrain.horizontal_scale - 0.8
+    if end_x <= start_x:
+        end_x = start_x + 0.1
+    x = np.linspace(start_x, end_x, num_goals, dtype=np.float32)
+    y = np.full(num_goals, terrain.width * terrain.horizontal_scale * 0.5, dtype=np.float32)
+    z = np.zeros(num_goals, dtype=np.float32)
+    return np.stack((x, y, z), axis=-1)
+
+def _goal_pixels(terrain, goals):
+    xs = np.clip(np.round(goals[:, 0] / terrain.horizontal_scale).astype(np.int64), 1, terrain.length - 2)
+    ys = np.clip(np.round(goals[:, 1] / terrain.horizontal_scale).astype(np.int64), 1, terrain.width - 2)
+    return xs, ys
+
+def _pad_parkour_edges(terrain, pad_width=0.1, pad_height=0.5):
+    pad_w = _meters_to_px(terrain, pad_width)
+    pad_h = _meters_to_height(terrain, pad_height)
+    terrain.height_field_raw[:, :pad_w] = pad_h
+    terrain.height_field_raw[:, -pad_w:] = pad_h
+    terrain.height_field_raw[:pad_w, :] = pad_h
+    terrain.height_field_raw[-pad_w:, :] = pad_h
+
+def parkour_flat_terrain(terrain, num_goals=8, difficulty=0.0):
+    terrain.goals = straight_goal_line(terrain, num_goals)[:, :2]
+    _pad_parkour_edges(terrain)
+
+def parkour_hurdle_terrain(terrain, num_goals=8, num_hurdles=6, difficulty=0.0):
+    goals = straight_goal_line(terrain, num_goals)
+    xs, ys = _goal_pixels(terrain, goals)
+    hurdle_len = _meters_to_px(terrain, 0.25 + 0.10 * difficulty)
+    half_width = _meters_to_px(terrain, 0.45 + 0.25 * difficulty)
+    height = _meters_to_height(terrain, 0.12 + 0.18 * difficulty)
+    for x, y in zip(xs[1:-1], ys[1:-1]):
+        terrain.height_field_raw[max(0, x - hurdle_len // 2):min(terrain.length, x + hurdle_len // 2 + 1), :] = height
+        terrain.height_field_raw[max(0, x - hurdle_len // 2):min(terrain.length, x + hurdle_len // 2 + 1), max(0, y - half_width):min(terrain.width, y + half_width)] = 0
+    terrain.goals = goals[:, :2]
+    _pad_parkour_edges(terrain)
+
+def parkour_gap_terrain(terrain, num_goals=8, num_gaps=6, difficulty=0.0):
+    goals = straight_goal_line(terrain, num_goals)
+    xs, ys = _goal_pixels(terrain, goals)
+    gap = _meters_to_px(terrain, 0.18 + 0.28 * difficulty)
+    half_width = _meters_to_px(terrain, 0.55 + 0.25 * difficulty)
+    depth = -_meters_to_height(terrain, 0.45 + 0.45 * difficulty)
+    for x, y in zip(xs[1:-1], ys[1:-1]):
+        terrain.height_field_raw[max(0, x - gap // 2):min(terrain.length, x + gap // 2 + 1), :] = depth
+        terrain.height_field_raw[max(0, x - gap // 2):min(terrain.length, x + gap // 2 + 1), max(0, y - half_width):min(terrain.width, y + half_width)] = 0
+    terrain.goals = goals[:, :2]
+    _pad_parkour_edges(terrain)
+
+def parkour_step_terrain(terrain, num_goals=8, num_steps=6, difficulty=0.0):
+    goals = straight_goal_line(terrain, num_goals)
+    xs, _ = _goal_pixels(terrain, goals)
+    step_h = _meters_to_height(terrain, 0.08 + 0.14 * difficulty)
+    height = 0
+    last_x = max(0, xs[0])
+    for idx, x in enumerate(xs[1:]):
+        if idx < max(1, len(xs) // 2):
+            height += step_h
+        else:
+            height = max(0, height - step_h)
+        terrain.height_field_raw[last_x:min(terrain.length, x), :] = height
+        last_x = min(terrain.length - 1, x)
+    terrain.height_field_raw[last_x:, :] = height
+    terrain.goals = goals[:, :2]
+    _pad_parkour_edges(terrain)
+
+def parkour_stair_terrain(terrain, num_goals=8, num_steps=6, difficulty=0.0):
+    goals = straight_goal_line(terrain, num_goals)
+    xs, _ = _goal_pixels(terrain, goals)
+    step_h = _meters_to_height(terrain, 0.06 + 0.12 * difficulty)
+    for idx in range(len(xs) - 1):
+        terrain.height_field_raw[xs[idx]:xs[idx + 1], :] = idx * step_h
+    terrain.height_field_raw[xs[-1]:, :] = max(0, len(xs) - 1) * step_h
+    terrain.goals = goals[:, :2]
+    _pad_parkour_edges(terrain)
