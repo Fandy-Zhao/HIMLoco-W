@@ -58,14 +58,46 @@ class LeggedRobotCfg(BaseConfig):
         selected = False # select a unique terrain type and pass all arguments
         terrain_kwargs = None # Dict of arguments for selected terrain
         max_init_terrain_level = 5 # starting curriculum state
-        terrain_length = 8.
-        terrain_width = 8.
+        terrain_length = 5.
+        terrain_width = 5.
         num_rows= 10 # number of terrain rows (levels)
         num_cols = 20 # number of terrain cols (types)
         # terrain types: [smooth slope, rough slope, stairs up, stairs down, discrete]
         terrain_proportions = [0.1, 0.2, 0.3, 0.3, 0.1]
         # trimesh only:
         slope_treshold = 0.75 # slopes above this threshold will be corrected to vertical surfaces
+        use_terrain_idx = True
+        terrain_idx_unknown = -1
+        terrain_idx_slope = 0
+        terrain_idx_rough_slope = 1
+        terrain_idx_stairs_up = 2
+        terrain_idx_stairs_down = 3
+        terrain_idx_discrete = 4
+        terrain_idx_stepping_stones = 5
+        terrain_idx_gap = 6
+        terrain_idx_pit = 7
+        terrain_idx_parkour = 8
+        terrain_idx_parkour_hurdle = 9
+        terrain_idx_parkour_flat = 10
+        terrain_idx_parkour_step = 11
+        terrain_idx_parkour_gap = 12
+        terrain_idx_T_step_stl = 13
+        terrain_idx_Slope = 14
+        terrain_idx_BridgeA = 15
+        terrain_idx_BridgeB = 16
+        terrain_extra_proportions = {
+            'parkour': 0.,
+            'parkour_hurdle': 0.,
+            'parkour_flat': 0.,
+            'parkour_step': 0.,
+            'parkour_gap': 0.,
+            'T_step_stl': 0.,
+            'Slope': 0.,
+            'BridgeA': 0.,
+            'BridgeB': 0.,
+        }
+        stl_terrain_length = 5.0
+        stl_terrain_width = 5.0
         use_parkour_goals = False
         num_goals = 8
         num_future_goal_obs = 2

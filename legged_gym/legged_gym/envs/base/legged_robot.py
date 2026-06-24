@@ -442,6 +442,49 @@ class LeggedRobot(BaseTask):
         return props
     
 
+
+    def _init_env_terrain_idx(self):
+        if getattr(self.cfg.terrain, 'use_terrain_idx', False) and hasattr(self, 'terrain'):
+            if hasattr(self.terrain, 'terrain_idx_map'):
+                self.terrain_idx_map = torch.from_numpy(self.terrain.terrain_idx_map).to(self.device).long()
+            elif hasattr(self.terrain, 'terrain_type'):
+                self.terrain_idx_map = torch.from_numpy(self.terrain.terrain_type).to(self.device).long()
+            else:
+                self.terrain_idx_map = torch.full((self.cfg.terrain.num_rows, self.cfg.terrain.num_cols), self.cfg.terrain.terrain_idx_unknown, device=self.device, dtype=torch.long)
+            self.env_terrain_idx = self.terrain_idx_map[self.terrain_levels, self.terrain_types]
+        else:
+            self.env_terrain_idx = torch.full((self.num_envs,), -1, device=self.device, dtype=torch.long)
+
+    def _sync_env_terrain_idx(self, env_ids=None):
+        if not hasattr(self, 'env_terrain_idx') or not hasattr(self, 'terrain_idx_map'):
+            return
+        if env_ids is None:
+            self.env_terrain_idx[:] = self.terrain_idx_map[self.terrain_levels, self.terrain_types]
+        else:
+            self.env_terrain_idx[env_ids] = self.terrain_idx_map[self.terrain_levels[env_ids], self.terrain_types[env_ids]]
+
+    def _terrain_is(self, idx):
+        if not hasattr(self, 'env_terrain_idx'):
+            return torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)
+        return self.env_terrain_idx == idx
+
+    def _terrain_in(self, idx_list):
+        mask = torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)
+        if not hasattr(self, 'env_terrain_idx'):
+            return mask
+        for idx in idx_list:
+            mask |= self.env_terrain_idx == idx
+        return mask
+
+    def debug_terrain_idx(self, prefix='[terrain_idx]'):
+        if not hasattr(self, 'env_terrain_idx'):
+            print(prefix, 'env_terrain_idx missing')
+            return
+        unique_ids, counts = torch.unique(self.env_terrain_idx, return_counts=True)
+        print(prefix, 'unique:', unique_ids.detach().cpu().tolist())
+        print(prefix, 'counts:', counts.detach().cpu().tolist())
+        print(prefix, 'first 16:', self.env_terrain_idx[:16].detach().cpu().tolist())
+
     def _goal_commands_enabled(self):
         return bool(getattr(self.cfg.commands, 'use_goal_yaw_command', False)) and bool(getattr(self.cfg.terrain, 'use_parkour_goals', False))
 
@@ -672,6 +715,7 @@ class LeggedRobot(BaseTask):
                                                    torch.randint_like(self.terrain_levels[env_ids], self.max_terrain_level),
                                                    torch.clip(self.terrain_levels[env_ids], 0)) # (the minumum level is zero)
         self.env_origins[env_ids] = self.terrain_origins[self.terrain_levels[env_ids], self.terrain_types[env_ids]]
+        self._sync_env_terrain_idx(env_ids)
     
     def update_command_curriculum(self, env_ids):
         """ Implements a curriculum of increasing commands
@@ -1003,6 +1047,7 @@ class LeggedRobot(BaseTask):
             self.max_terrain_level = self.cfg.terrain.num_rows
             self.terrain_origins = torch.from_numpy(self.terrain.env_origins).to(self.device).to(torch.float)
             self.env_origins[:] = self.terrain_origins[self.terrain_levels, self.terrain_types]
+            self._init_env_terrain_idx()
         else:
             self.custom_origins = False
             self.env_origins = torch.zeros(self.num_envs, 3, device=self.device, requires_grad=False)
@@ -1014,6 +1059,7 @@ class LeggedRobot(BaseTask):
             self.env_origins[:, 0] = spacing * xx.flatten()[:self.num_envs]
             self.env_origins[:, 1] = spacing * yy.flatten()[:self.num_envs]
             self.env_origins[:, 2] = 0.
+            self.env_terrain_idx = torch.full((self.num_envs,), -1, device=self.device, dtype=torch.long)
 
     def _parse_cfg(self, cfg):
         self.dt = self.cfg.control.decimation * self.sim_params.dt
