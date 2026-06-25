@@ -167,6 +167,7 @@ class LeggedRobot(BaseTask):
         self.reset_buf = torch.any(torch.norm(self.contact_forces[:, self.termination_contact_indices, :], dim=-1) > 1., dim=1)
         self.time_out_buf = self.episode_length_buf > self.max_episode_length # no terminal reward for time-outs
         self.reset_buf |= self.time_out_buf
+        self.reset_buf |= self._check_final_goal_termination()
 
     def reset_idx(self, env_ids):
         """ Reset some environments.
@@ -183,6 +184,7 @@ class LeggedRobot(BaseTask):
         # update curriculum
         if self.cfg.terrain.curriculum:
             self._update_terrain_curriculum(env_ids)
+        self._randomize_terrain_cell_on_reset(env_ids)
         # avoid updating command curriculum at each step since the maximum command is common to all envs
         if self.cfg.commands.curriculum and (self.common_step_counter % self.max_episode_length==0):
             self.update_command_curriculum(env_ids)
@@ -721,6 +723,43 @@ class LeggedRobot(BaseTask):
                                                    torch.clip(self.terrain_levels[env_ids], 0)) # (the minumum level is zero)
         self.env_origins[env_ids] = self.terrain_origins[self.terrain_levels[env_ids], self.terrain_types[env_ids]]
         self._sync_env_terrain_idx(env_ids)
+
+    def _randomize_terrain_cell_on_reset(self, env_ids):
+        if not getattr(self.cfg.terrain, 'randomize_terrain_on_reset', False):
+            return
+        if len(env_ids) == 0 or not getattr(self, 'custom_origins', False):
+            return
+        if not hasattr(self, 'terrain_levels') or not hasattr(self, 'terrain_types'):
+            return
+        env_ids = env_ids.to(device=self.device, dtype=torch.long)
+        if getattr(self.cfg.terrain, 'randomize_terrain_levels_on_reset', True):
+            self.terrain_levels[env_ids] = torch.randint(
+                0,
+                self.max_terrain_level,
+                (len(env_ids),),
+                device=self.device,
+                dtype=self.terrain_levels.dtype,
+            )
+        if getattr(self.cfg.terrain, 'randomize_terrain_types_on_reset', True):
+            self.terrain_types[env_ids] = torch.randint(
+                0,
+                self.cfg.terrain.num_cols,
+                (len(env_ids),),
+                device=self.device,
+                dtype=self.terrain_types.dtype,
+            )
+        self.env_origins[env_ids] = self.terrain_origins[self.terrain_levels[env_ids], self.terrain_types[env_ids]]
+        self._sync_env_terrain_idx(env_ids)
+
+    def _check_final_goal_termination(self):
+        if not bool(getattr(self.cfg.terrain, 'terminate_after_reaching_final_goal', False)):
+            return torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)
+        if not hasattr(self, 'env_has_goals') or not hasattr(self, 'cur_goal_idx') or not hasattr(self, 'reached_goal'):
+            return torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)
+        final_goal_idx = max(int(getattr(self.cfg.terrain, 'num_goals', 0)) - 1, 0)
+        if final_goal_idx <= 0:
+            return torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)
+        return self.env_has_goals & (self.cur_goal_idx >= final_goal_idx) & self.reached_goal
     
     def update_command_curriculum(self, env_ids):
         """ Implements a curriculum of increasing commands

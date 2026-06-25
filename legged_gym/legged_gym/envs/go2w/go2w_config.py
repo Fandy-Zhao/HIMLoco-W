@@ -45,8 +45,8 @@ class GO2WRoughCfg(LeggedRobotCfg):
         selected = False
         terrain_kwargs = None
         max_init_terrain_level = 5
-        terrain_length = 5.
-        terrain_width = 5.
+        terrain_length = 18.
+        terrain_width = 4.
         num_rows = 10
         num_cols = 20
         terrain_proportions = [0, 0, 0, 0, 0, 0, 0, 0]
@@ -60,6 +60,7 @@ class GO2WRoughCfg(LeggedRobotCfg):
             'Slope': 0.,
             'BridgeA': 0.,
             'BridgeB': 0.,
+            'parkour_wall': 0.,
         }
         slope_treshold = 0.75
         use_parkour_goals = True
@@ -67,8 +68,17 @@ class GO2WRoughCfg(LeggedRobotCfg):
         num_future_goal_obs = 2
         next_goal_threshold = 0.2
         reach_goal_delay = 0.1
-        terminate_after_reaching_final_goal = False
+        terminate_after_reaching_final_goal = True
         parkour_terrain_proportions = [0.2, 0.2, 0.2, 0.2, 0.2]
+        randomize_terrain_on_reset = True
+        randomize_terrain_levels_on_reset = True
+        randomize_terrain_types_on_reset = True
+        random_difficulty_range = [0.0, 1.0]
+        y_range = [-0.4, 0.4]
+        hust_terrain = True
+        slim_hurdle = False
+        height = [0.02, 0.06]
+        downsampled_scale = 0.075
 
     class init_state(LeggedRobotCfg.init_state):
         pos = [0.0, 0.0, 0.5]

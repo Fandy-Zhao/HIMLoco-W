@@ -89,6 +89,8 @@ class TaskRegistry():
             env_cfg, _ = self.get_cfgs(name)
         # override cfg from args (if specified)
         env_cfg, _ = update_cfg_from_args(env_cfg, None, args)
+        if getattr(args, "web", False) and hasattr(env_cfg, "viewer"):
+            env_cfg.viewer.web = True
         if getattr(args, "stage", None) is not None:
             env_cfg, _ = self.set_stage(env_cfg, None, args)
         set_seed(env_cfg.seed)
@@ -116,7 +118,7 @@ class TaskRegistry():
 
         terrain_stage_props = {
             0: {'parkour_flat': 1.0},
-            1: {'parkour_hurdle': 2.0, 'parkour_flat': 2.5, 'parkour_step': 1.0, 'parkour_gap': 1.0},
+            1: {'parkour_hurdle': 2.0, 'parkour_flat': 1.5, 'parkour_step': 1.0, 'parkour_gap': 1.0},
             2: {
                 'parkour_hurdle': 0.8, 'parkour_flat': 0.2, 'parkour_step': 0.2, 'parkour_gap': 0.2,
                 'T_step_stl': 0.2, 'Slope': 0.2, 'BridgeA': 0.2, 'BridgeB': 0.2,

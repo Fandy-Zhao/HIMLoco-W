@@ -163,6 +163,7 @@ class Go2w(LeggedRobot):
         self.reset_buf = torch.any(torch.norm(self.contact_forces[:, self.termination_contact_indices, :], dim=-1) > 1., dim=1)
         self.time_out_buf = self.episode_length_buf > self.max_episode_length
         self.reset_buf |= self.time_out_buf
+        self.reset_buf |= self._check_final_goal_termination()
         if self.cfg.terrain.measure_heights:
             contact_flag = torch.mean(self.root_states[:, 2].unsqueeze(1) - self.measured_heights, dim=1)
             self.reset_buf |= contact_flag < 0.20

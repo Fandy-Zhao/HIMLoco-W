@@ -187,7 +187,10 @@ class WebViewer:
             self._notified = False
 
     def _stream_depth(self) -> bytes:
-        while self._env.cfg.depth.use_camera:
+        depth_cfg = getattr(self._env.cfg, 'depth', None)
+        if depth_cfg is None or not getattr(depth_cfg, 'use_camera', False):
+            return
+        while True:
             self._event_stream_depth.wait()
             image = imageio.imwrite("<bytes>", self._image_depth, format="JPEG")
             yield (b'--frame\r\n'
@@ -199,6 +202,11 @@ class WebViewer:
         camera_props.width = 960
         camera_props.height = 540
         camera_handle = self._gym.create_camera_sensor(env_handle, camera_props)
+        if camera_handle < 0:
+            raise RuntimeError(
+                "Failed to create Isaac Gym camera sensor for WebViewer. "
+                "Run with --web so the sim keeps a graphics device even when headless."
+            )
         self._cameras.append(camera_handle)
         cam_pos = root_pos + np.array([0, 1, 0.5])
         self._gym.set_camera_location(camera_handle, env_handle, gymapi.Vec3(*cam_pos), gymapi.Vec3(*root_pos))
@@ -244,6 +252,11 @@ class WebViewer:
                                            self._envs[self._camera_id],
                                            self._cameras[self._camera_id],
                                            self._camera_type)
+        if image.size == 0:
+            raise RuntimeError(
+                "WebViewer received an empty camera image. "
+                "Check that the sim was created with a valid graphics device."
+            )
         if self._camera_type == gymapi.IMAGE_COLOR:
             self._image = image.reshape(image.shape[0], -1, 4)[..., :3]
         elif self._camera_type == gymapi.IMAGE_DEPTH:
@@ -255,15 +268,16 @@ class WebViewer:
         else:
             raise ValueError("Unsupported camera type")
 
-        if self._env.cfg.depth.use_camera:
-            self._image_depth = self._env.depth_buffer[self._camera_id, -1].cpu().numpy() + 0.5
-            self._image_depth = np.uint8(255 * self._image_depth)
+        # if self._env.cfg.depth.use_camera:
+        #     self._image_depth = self._env.depth_buffer[self._camera_id, -1].cpu().numpy() + 0.5
+        #     self._image_depth = np.uint8(255 * self._image_depth)
 
         root_pos = self._env.root_states[self._camera_id, :3].cpu().numpy()
         cam_pos = root_pos + self.cam_pos_rel
         self._gym.set_camera_location(self._cameras[self._camera_id], self._envs[self._camera_id], gymapi.Vec3(*cam_pos), gymapi.Vec3(*root_pos))
 
         self._event_stream.set()
-        if self._env.cfg.depth.use_camera:
+        depth_cfg = getattr(self._env.cfg, 'depth', None)
+        if depth_cfg is not None and getattr(depth_cfg, 'use_camera', False):
             self._event_stream_depth.set()
         self._notified = True

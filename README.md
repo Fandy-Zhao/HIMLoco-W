@@ -77,6 +77,7 @@ RTX 4090 GPUs require `sm_89` support. The original PyTorch `1.10.0+cu113` wheel
     - 启动 Flask Web Viewer，在 `http://127.0.0.1:5000/` 打开浏览器查看。
     - 如果为无头机器，可使用 VS Code Live Preview 或浏览器访问此地址。
   - `python play.py --task go2w --load_run <run_name> --checkpoint <n>`
+    - python play.py --task go2w --web  --experiment_name go2w-stage1  --load_run Jun24_17-28-27_1  --stage 2
     - 直接加载指定训练目录与 checkpoint。
   - `python play.py --web --task go2w --load_run <run_name> --checkpoint <n>`
     - 以 web 模式播放指定任务的已有模型。

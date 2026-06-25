@@ -58,8 +58,8 @@ class LeggedRobotCfg(BaseConfig):
         selected = False # select a unique terrain type and pass all arguments
         terrain_kwargs = None # Dict of arguments for selected terrain
         max_init_terrain_level = 5 # starting curriculum state
-        terrain_length = 5.
-        terrain_width = 5.
+        terrain_length = 18.
+        terrain_width = 4.
         num_rows= 10 # number of terrain rows (levels)
         num_cols = 20 # number of terrain cols (types)
         # terrain types: [smooth slope, rough slope, stairs up, stairs down, discrete]
@@ -85,6 +85,7 @@ class LeggedRobotCfg(BaseConfig):
         terrain_idx_Slope = 14
         terrain_idx_BridgeA = 15
         terrain_idx_BridgeB = 16
+        terrain_idx_parkour_wall = 17
         terrain_extra_proportions = {
             'parkour': 0.,
             'parkour_hurdle': 0.,
@@ -95,16 +96,26 @@ class LeggedRobotCfg(BaseConfig):
             'Slope': 0.,
             'BridgeA': 0.,
             'BridgeB': 0.,
+            'parkour_wall': 0.,
         }
         stl_terrain_length = 5.0
         stl_terrain_width = 5.0
+        y_range = [-0.4, 0.4]
+        hust_terrain = True
+        slim_hurdle = False
+        height = [0.02, 0.06]
+        downsampled_scale = 0.075
         use_parkour_goals = False
         num_goals = 8
         num_future_goal_obs = 2
         next_goal_threshold = 0.2
         reach_goal_delay = 0.1
-        terminate_after_reaching_final_goal = False
+        terminate_after_reaching_final_goal = True
         parkour_terrain_proportions = [0.2, 0.2, 0.2, 0.2, 0.2]
+        randomize_terrain_on_reset = True
+        randomize_terrain_levels_on_reset = True
+        randomize_terrain_types_on_reset = True
+        random_difficulty_range = [0.0, 1.0]
 
     class commands:
         curriculum = True
