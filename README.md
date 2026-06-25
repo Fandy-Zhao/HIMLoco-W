@@ -62,11 +62,12 @@ RTX 4090 GPUs require `sm_89` support. The original PyTorch `1.10.0+cu113` wheel
   - `cd legged_gym/legged_gym/scripts`
   - `python train.py`
   - `python train.py --task go2w --headless --experiment_name go2w-stage0 --run_name 1 --stage 0 `
+  - python train.py --task go2w --headless --stage 0 --experiment_name go2w-stage0 --run_name 0625-0 
 
 2. Tensorboard:
 
-  - `cd /home/zhaozhuofan/test/HIMLoco-W/legged_gym`
-  - `tensorboard --logdir logs`
+  - cd /home/zhaozhuofan/test/HIMLoco-W/legged_gym
+  - tensorboard --logdir logs
 
 3. Play and export the latest policy:
 

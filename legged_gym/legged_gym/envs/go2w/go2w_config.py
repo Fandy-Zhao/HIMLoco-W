@@ -25,7 +25,7 @@ class GO2WRoughCfg(LeggedRobotCfg):
         goal_yaw_rate_clip = 2.0
 
         class ranges(LeggedRobotCfg.commands.ranges):
-            lin_vel_x = [0, 2]
+            lin_vel_x = [0, 3]
             lin_vel_y = [0, 0]
             ang_vel_yaw = [0, 0]
             heading = [-3.14, 3.14]
@@ -156,8 +156,8 @@ class GO2WRoughCfg(LeggedRobotCfg):
 
         class scales(LeggedRobotCfg.rewards.scales):
             termination = -0.8
-            tracking_lin_vel = 1.0
-            tracking_ang_vel = 0.5
+            tracking_lin_vel = 5.0    #指令跟随
+            tracking_ang_vel = 0.5    #朝向目标点，最好降低
             lin_vel_z = -2.0
             ang_vel_xy = -0.05
             orientation = -1.0
@@ -178,13 +178,13 @@ class GO2WRoughCfg(LeggedRobotCfg):
             torque_limits = -0.0
             arm_pos = -0.0
             hip_action_l2 = -0.1
-            tracking_goal_vel = 1.0
-            tracking_goal_yaw = 0.3
+            tracking_goal_vel = 0.0        #会影响指令跟随
+            tracking_goal_yaw = 0.2        #朝向目标点
             reach_goal = 0.5
             finish_course = 0.0
             wheel_torque = 0.0
-            wheel_vel_smooth = -1e-7
-            wheel_slip = -0.03
+            wheel_vel_smooth = -1e-6       #会导致拖着轮子在走
+            wheel_slip = -0.3
 
 
 class GO2WRoughCfgPPO(LeggedRobotCfgPPO):

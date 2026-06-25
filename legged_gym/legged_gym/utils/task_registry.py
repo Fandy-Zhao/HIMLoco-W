@@ -29,7 +29,6 @@
 # Copyright (c) 2021 ETH Zurich, Nikita Rudin
 
 import os
-from datetime import datetime
 from typing import Tuple, Any
 import torch
 import numpy as np
@@ -120,7 +119,7 @@ class TaskRegistry():
             0: {'parkour_flat': 1.0},
             1: {'parkour_hurdle': 2.0, 'parkour_flat': 1.5, 'parkour_step': 1.0, 'parkour_gap': 1.0},
             2: {
-                'parkour_hurdle': 0.8, 'parkour_flat': 0.2, 'parkour_step': 0.2, 'parkour_gap': 0.2,
+                'parkour_hurdle': 0.8, 'parkour_flat': 0.2, 'parkour_step': 0., 'parkour_gap': 0.2, 'parkour_wall': 0.2,
                 'T_step_stl': 0.2, 'Slope': 0.2, 'BridgeA': 0.2, 'BridgeB': 0.2,
             },
             4: {'parkour_flat': 1.0},
@@ -192,13 +191,14 @@ class TaskRegistry():
         if getattr(args, "stage", None) is not None:
             _, train_cfg = self.set_stage(None, train_cfg, args)
 
+        run_name = train_cfg.runner.run_name if train_cfg.runner.run_name else 'default'
         if log_root=="default":
             log_root = os.path.join(LEGGED_GYM_ROOT_DIR, 'logs', train_cfg.runner.experiment_name)
-            log_dir = os.path.join(log_root, datetime.now().strftime('%b%d_%H-%M-%S') + '_' + train_cfg.runner.run_name)
+            log_dir = os.path.join(log_root, run_name)
         elif log_root is None:
             log_dir = None
         else:
-            log_dir = os.path.join(log_root, datetime.now().strftime('%b%d_%H-%M-%S') + '_' + train_cfg.runner.run_name)
+            log_dir = os.path.join(log_root, run_name)
         
         train_cfg_dict = class_to_dict(train_cfg)
         runner = HIMOnPolicyRunner(env, train_cfg_dict, log_dir, device=args.rl_device)
