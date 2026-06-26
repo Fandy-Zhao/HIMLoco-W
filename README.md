@@ -62,7 +62,7 @@ RTX 4090 GPUs require `sm_89` support. The original PyTorch `1.10.0+cu113` wheel
   - `cd legged_gym/legged_gym/scripts`
   - `python train.py`
   - python train.py --task go2w --headless --experiment_name go2w-stage0 --run_name 1 --stage 0 
-  - python train.py --task go2w --headless --stage 0 --experiment_name go2w-stage0 --run_name 0625-0   --rl_device cuda:0
+  - python train.py --task go2w --headless --stage 0 --experiment_name go2w-new --run_name 0625-stage-0   --rl_device cuda:0
   - python train.py --task go2w --headless --stage 0 --experiment_name go2w-new --run_name 0626-stage-0   --rl_device cuda:0  --resume --load_run 0626-stage0-1
 
 2. Tensorboard:

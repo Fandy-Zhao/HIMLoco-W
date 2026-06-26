@@ -249,6 +249,13 @@ class LeggedRobotCfg(BaseConfig):
         wheel_torque_weight = 1.0
         wheel_acc_weight = 1.0
         wheel_action_rate_weight = 1.0
+        delta_yaw_sigma = 0.25
+        min_goal_speed = 0.0
+        max_goal_speed = 0.8
+        stop_cmd_threshold = 0.05
+        obstacle_height_threshold = 0.04
+        gap_height_threshold = 0.06
+        obstacle_probe_distances = [0.25, 0.40, 0.55, 0.70]
 
     class normalization:
         class obs_scales:

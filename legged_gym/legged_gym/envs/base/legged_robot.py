@@ -207,6 +207,8 @@ class LeggedRobot(BaseTask):
         self._reset_goals(env_ids)
         self._update_goals()
         self._update_goal_yaw_command()
+        if hasattr(self, 'final_goal_reset_buf'):
+            self.final_goal_reset_buf[env_ids] = False
 
         # reset buffers
         self.last_actions[env_ids] = 0.
@@ -596,7 +598,8 @@ class LeggedRobot(BaseTask):
         self.reached_goal[:] = reached
         self.reach_goal_timer[reached] += 1
         self.reach_goal_timer[active & ~reached] = 0
-        delay_steps = max(1.0, float(self.cfg.terrain.reach_goal_delay) / self.dt)
+        goal_delay = getattr(self.cfg.terrain, 'goal_reach_delay', getattr(self.cfg.terrain, 'reach_goal_delay', 0.1))
+        delay_steps = max(1.0, float(goal_delay) / self.dt)
         advance = active & (self.reach_goal_timer > delay_steps) & (self.cur_goal_idx < max(self.num_goal_waypoints - 1, 0))
         self.cur_goal_idx[advance] += 1
         self.reach_goal_timer[advance] = 0
@@ -803,6 +806,10 @@ class LeggedRobot(BaseTask):
         Args:
             env_ids (List[int]): ids of environments being reset
         """
+        if "tracking_lin_vel" not in self.episode_sums or "tracking_lin_vel" not in self.reward_scales:
+            return
+        if self.reward_scales["tracking_lin_vel"] <= 0.0:
+            return
         low_vel_env_ids = (env_ids > (self.num_envs * 0.2))
         high_vel_env_ids = (env_ids < (self.num_envs * 0.2))
         low_vel_env_ids = env_ids[low_vel_env_ids.nonzero(as_tuple=True)]
@@ -885,6 +892,7 @@ class LeggedRobot(BaseTask):
         self.commands = torch.zeros(self.num_envs, self.cfg.commands.num_commands, dtype=torch.float, device=self.device, requires_grad=False) # x vel, y vel, target yaw
         self.commands_scale = torch.tensor([self.obs_scales.lin_vel, self.obs_scales.lin_vel, getattr(self.obs_scales, 'delta_yaw', 1.0)], device=self.device, requires_grad=False)
         self._init_goal_buffers()
+        self.final_goal_reset_buf = torch.zeros(self.num_envs, dtype=torch.bool, device=self.device, requires_grad=False)
         self.feet_air_time = torch.zeros(self.num_envs, self.feet_indices.shape[0], dtype=torch.float, device=self.device, requires_grad=False)
         self.last_contacts = torch.zeros(self.num_envs, len(self.feet_indices), dtype=torch.bool, device=self.device, requires_grad=False)
         if hasattr(self, 'leg_foot_indices') and self.leg_foot_indices.numel() > 0:
@@ -946,6 +954,7 @@ class LeggedRobot(BaseTask):
         """ Prepares a list of reward functions, whcih will be called to compute the total reward.
             Looks for self._reward_<REWARD_NAME>, where <REWARD_NAME> are names of all non zero reward scales in the cfg.
         """
+        self._validate_reward_scales()
         # remove zero scales + multiply non-zero ones by dt
         for key in list(self.reward_scales.keys()):
             scale = self.reward_scales[key]
@@ -966,6 +975,18 @@ class LeggedRobot(BaseTask):
         # reward episode sums
         self.episode_sums = {name: torch.zeros(self.num_envs, dtype=torch.float, device=self.device, requires_grad=False)
                              for name in self.reward_scales.keys()}
+
+    def _validate_reward_scales(self):
+        missing = []
+        for name, scale in self.reward_scales.items():
+            if scale == 0:
+                continue
+            fn_name = '_reward_' + name
+            if not hasattr(self, fn_name):
+                missing.append((name, fn_name, scale))
+        if missing:
+            msg = "\n".join([f"{name}: {fn_name}, scale={scale}" for name, fn_name, scale in missing])
+            raise RuntimeError(f"Missing reward functions for non-zero scales:\n{msg}")
 
     def _create_ground_plane(self):
         """ Adds a ground plane to the simulation, sets friction and restitution based on the cfg.
@@ -1353,9 +1374,11 @@ class LeggedRobot(BaseTask):
         vel_to_goal = torch.sum(target_dir * self.root_states[:, 7:9], dim=1)
 
         cmd_speed = torch.norm(self.commands[:, :2], dim=1)
-        min_goal_speed = float(getattr(self.cfg.rewards, 'min_goal_speed', 0.2))
+        stop_cmd_threshold = float(getattr(self.cfg.rewards, 'stop_cmd_threshold', 0.05))
+        min_goal_speed = float(getattr(self.cfg.rewards, 'min_goal_speed', 0.0))
         max_goal_speed = float(getattr(self.cfg.rewards, 'max_goal_speed', 0.8))
         target_speed = torch.clamp(cmd_speed, min=min_goal_speed, max=max_goal_speed)
+        target_speed = torch.where(cmd_speed <= stop_cmd_threshold, torch.zeros_like(target_speed), target_speed)
         reward = torch.exp(-torch.square(vel_to_goal - target_speed) / self.cfg.rewards.tracking_sigma)
         return reward
 
@@ -1377,6 +1400,18 @@ class LeggedRobot(BaseTask):
         reward = final_goal_reached.float()
         if hasattr(self, 'env_has_goals'):
             reward[~self.env_has_goals] = 0.0
+        return reward
+
+    def _reward_goal_bonus(self):
+        if not hasattr(self, 'reached_goal'):
+            return torch.zeros(self.num_envs, dtype=torch.float, device=self.device)
+
+        reward = self.reached_goal.float()
+        if hasattr(self, 'cur_goal_idx') and hasattr(self.cfg.terrain, 'num_goals'):
+            final_goal_idx = int(self.cfg.terrain.num_goals) - 1
+            final_reached = (self.cur_goal_idx >= final_goal_idx) & self.reached_goal
+            final_bonus = float(getattr(self.cfg.rewards, 'final_goal_bonus', 5.0))
+            reward = reward + final_bonus * final_reached.float()
         return reward
 
     def _mask_invalid_terrain_reward(self, reward):
@@ -1428,9 +1463,8 @@ class LeggedRobot(BaseTask):
         return self._reward_tracking_delta_yaw()
 
     def _reward_tracking_delta_yaw(self):
-        delta_yaw = self._get_delta_yaw_to_goal()
-        sigma = float(getattr(self.cfg.rewards, 'delta_yaw_sigma', 0.25))
-        return torch.exp(-torch.square(delta_yaw) / sigma)
+        delta_yaw = self.commands[:, 2]
+        return 0.5 * (torch.cos(delta_yaw) + 1.0)
 
     def _reward_yaw_rate_l2(self):
         return torch.square(self.base_ang_vel[:, 2])
@@ -1468,7 +1502,8 @@ class LeggedRobot(BaseTask):
         wheel_power = power[:, self.wheel_dof_indices]
         reward = torch.sum(leg_power, dim=1)
         if wheel_power.numel() > 0:
-            reward = reward + self.cfg.rewards.wheel_torque_weight * torch.sum(wheel_power, dim=1)
+            wheel_torque_weight = getattr(self.cfg.rewards, 'wheel_drive_torque_weight', self.cfg.rewards.wheel_torque_weight)
+            reward = reward + wheel_torque_weight * torch.sum(wheel_power, dim=1)
         return reward
 
     def _reward_base_height(self):
@@ -1540,7 +1575,8 @@ class LeggedRobot(BaseTask):
         wheel_torque = self.torques[:, self.wheel_dof_indices]
         reward = torch.sum(torch.square(leg_torque), dim=1)
         if wheel_torque.numel() > 0:
-            reward = reward + self.cfg.rewards.wheel_torque_weight * torch.sum(torch.square(wheel_torque), dim=1)
+            wheel_torque_weight = getattr(self.cfg.rewards, 'wheel_drive_torque_weight', self.cfg.rewards.wheel_torque_weight)
+            reward = reward + wheel_torque_weight * torch.sum(torch.square(wheel_torque), dim=1)
         return reward
 
     def _reward_dof_vel(self):
@@ -1592,7 +1628,8 @@ class LeggedRobot(BaseTask):
         wheel_torques = self.torques[:, self.wheel_dof_indices]
         wheel_limits = self.torque_limits[self.wheel_dof_indices]
         if wheel_torques.numel() > 0:
-            reward = reward + self.cfg.rewards.wheel_torque_weight * torch.sum((torch.abs(wheel_torques) - wheel_limits*self.cfg.rewards.soft_torque_limit).clip(min=0.), dim=1)
+            wheel_torque_weight = getattr(self.cfg.rewards, 'wheel_drive_torque_weight', self.cfg.rewards.wheel_torque_weight)
+            reward = reward + wheel_torque_weight * torch.sum((torch.abs(wheel_torques) - wheel_limits*self.cfg.rewards.soft_torque_limit).clip(min=0.), dim=1)
         return reward
 
     def _reward_feet_air_time(self):

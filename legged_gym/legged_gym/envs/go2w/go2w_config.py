@@ -65,7 +65,7 @@ class GO2WRoughCfg(LeggedRobotCfg):
         num_goals = 8
         num_future_goal_obs = 2
         next_goal_threshold = 0.2
-        reach_goal_delay = 0.1
+        goal_reach_delay = 0.1
         terminate_after_reaching_final_goal = True
         parkour_terrain_proportions = [0.2, 0.2, 0.2, 0.2, 0.2]
         randomize_terrain_on_reset = True
@@ -148,7 +148,7 @@ class GO2WRoughCfg(LeggedRobotCfg):
         soft_torque_limit = 1.
         base_height_target = 0.34
         max_contact_force = 100.
-        wheel_torque_weight = 0.5
+        wheel_drive_torque_weight = 0.5
         wheel_acc_weight = 0.2
         wheel_action_rate_weight = 0.5
         wheel_clearance_target = 0.10
@@ -157,44 +157,36 @@ class GO2WRoughCfg(LeggedRobotCfg):
         delta_yaw_sigma = 0.25
         min_goal_speed = 0.2
         max_goal_speed = 0.8
+        stop_cmd_threshold = 0.05
+        final_goal_bonus = 5.0
         use_fixed_goal_speed = False
         fixed_goal_speed = 0.4
+        obstacle_height_threshold = 0.06
+        gap_height_threshold = 0.06
+        obstacle_probe_distances = [0.25, 0.40, 0.55, 0.70]
 
-        class scales(LeggedRobotCfg.rewards.scales):
-            # Stage 0 is meant to learn stable flat-ground go2w locomotion first.
-            # Keep command tracking dominant here; waypoint progress rewards can
-            # be re-enabled later for parkour/navigation stages after speed
-            # tracking and posture are reliable.
+        class scales:
             termination = -0.8
-            tracking_lin_vel = 10.0    # Main flat-ground objective: follow commands[:, :2]. Keep high to prevent overspeed.
-            tracking_ang_vel = 1.5    # Legacy scale name; implementation now tracks heading angle, not yaw rate.
-            lin_vel_z = -2.0          # Suppress bouncing/hopping; increase if base vertical velocity grows.
-            ang_vel_xy = -0.05        # Mild roll/pitch angular-rate penalty; keep mild unless posture becomes visibly unstable.
-            orientation = -1.0        # Posture stabilization. Current play metrics look stable, so avoid over-stiffening it.
-            torques = -1e-5           # Very light energy regularization; increasing too much can weaken wheel drive.
-            dof_vel = -1e-4           # Mild leg joint velocity regularization, wheel DOFs are excluded in go2w_robot.py.
-            dof_acc = -2.5e-7         # Mild smoothness term; keep small to avoid suppressing useful gait transitions.
-            base_height = -0.5        # Keeps chassis near base_height_target without dominating velocity tracking.
-            feet_air_time = 0.0
-            foot_clearance = 0.0
-            feet_clearance = 0.0
-            collision = -0.5          # Penalizes thigh/calf/base contacts. Current collision rate is low, so this is enough.
-            feet_stumble = 0.0
-            stumble = 0.0
-            action_rate = -0.01       # Smooths policy outputs; increase only if actions are visibly jittery.
-            stand_still = -0.01       # Only affects near-zero speed commands; low impact for current forward-walk training.
-            dof_pos_limits = -0.9     # Strong guard against joint-limit exploitation.
-            dof_vel_limits = -0.0
-            torque_limits = -0.0
-            arm_pos = -0.0
-            hip_action_l2 = -0.1      # Discourages excessive hip swing while still allowing leg posture adjustment.
-            tracking_goal_vel = 1.0   # Keep disabled in stage 0: current implementation rewards unbounded progress speed, not command tracking.
-            tracking_goal_yaw = 0.6   # Small waypoint-facing bias based on target-yaw heading error.
-            reach_goal = 0.5          # Sparse waypoint bonus. Acceptable on parkour_flat; reduce if it encourages rushing.
-            finish_course = 0.0
-            wheel_torque = 0.0        # Disabled for now; torque penalties can underpower wheel acceleration.
-            wheel_vel_smooth = -1e-7  # Very light wheel speed smoothing; stronger values may make the robot drag wheels.
-            wheel_slip = -0.1         # Important for go2w: discourages high-speed wheel spin/sliding without blocking motion.
+            goal_progress = 2.0
+            tracking_delta_yaw = 0.5
+            goal_bonus = 0.0
+            lin_vel_z = -2.0
+            ang_vel_xy = -0.05
+            orientation = -1.0
+            base_height = -0.5
+            yaw_rate_l2 = -0.01
+            torques = -1e-5
+            dof_vel = -1e-4
+            dof_acc = -2.5e-7
+            action_rate = -0.01
+            dof_pos_limits = -0.9
+            hip_action_l2 = -0.1
+            wheel_slip = -0.1
+            stand_still = -0.01
+            collision = -0.5
+            wheel_clearance = 0.0
+            wheel_climb_drive = 0.0
+            wheel_spin_without_progress = 0.0
 
 
 class GO2WRoughCfgPPO(LeggedRobotCfgPPO):

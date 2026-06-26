@@ -1,0 +1,216 @@
+{
+  "0": {
+    "checks": {
+      "base_height_offset_gating": {
+        "base_target": 0.34,
+        "mask_ratio": 0.0,
+        "offset": 0.0
+      },
+      "commands2_update_path": {
+        "allowed_matches": [
+          "legged_gym/legged_gym/envs/base/legged_robot.py:620: self.commands[:, 2] = delta_yaw",
+          "legged_gym/legged_gym/scripts/play.py:50: env.commands[:, 2] = delta_yaw",
+          "legged_gym/legged_gym/scripts/play.py:146: 'delta_yaw_cmd': env.commands[robot_index, 2].item(),"
+        ],
+        "matches": [
+          "legged_gym/legged_gym/envs/base/legged_robot_config.py:125: heading_command = True # legacy flag; commands[:, 2] now stores target yaw directly",
+          "legged_gym/legged_gym/envs/base/legged_robot.py:514: return torch.clamp(self.commands[:, 2], -torch.pi, torch.pi)",
+          "legged_gym/legged_gym/envs/base/legged_robot.py:620: self.commands[:, 2] = delta_yaw",
+          "legged_gym/legged_gym/envs/base/legged_robot.py:1459: # Deprecated yaw-rate command tracking. commands[:, 2] is delta yaw.",
+          "legged_gym/legged_gym/envs/base/legged_robot.py:1466: delta_yaw = self.commands[:, 2]",
+          "legged_gym/legged_gym/envs/go2w/go2w_robot.py:207: heading = self._get_base_yaw() + self.commands[:, 2]",
+          "legged_gym/legged_gym/scripts/play.py:50: env.commands[:, 2] = delta_yaw",
+          "legged_gym/legged_gym/scripts/play.py:146: 'delta_yaw_cmd': env.commands[robot_index, 2].item(),"
+        ]
+      },
+      "delta_yaw_step_update": {
+        "commands2_range": [
+          -0.5509533882141113,
+          -0.1628732681274414
+        ],
+        "max_delta_yaw_error": 0.0
+      },
+      "final_goal_reset_clear": {
+        "failed_reset_reward_mean": 1.0
+      },
+      "obstacle_mask_height_diff": {
+        "flat_mask_ratio": 0.0,
+        "synthetic_mask": [
+          false,
+          true,
+          true
+        ]
+      },
+      "stage0_stop_slow": {
+        "moving": {
+          "cmd_speed_mean": 0.20000000298023224,
+          "goal_reward_mean": 0.7544956207275391,
+          "target_speed_mean": 0.20000000298023224
+        },
+        "slow_below_threshold": {
+          "cmd_speed_mean": 0.029999999329447746,
+          "goal_reward_mean": 0.8896196484565735,
+          "target_speed_mean": 0.0
+        },
+        "stop": {
+          "cmd_speed_mean": 0.0,
+          "goal_reward_mean": 0.8896196484565735,
+          "target_speed_mean": 0.0
+        }
+      },
+      "tracking_delta_yaw_cos": {
+        "delta_yaw": [
+          0.0,
+          1.5707963705062866,
+          -1.5707963705062866,
+          3.1415927410125732
+        ],
+        "reward": [
+          1.0,
+          0.4999999701976776,
+          0.4999999701976776,
+          0.0
+        ]
+      },
+      "wheel_forward_sign": {
+        "effective_wheel_vel_mean": [
+          0.14699944853782654,
+          -1.6805644035339355,
+          1.074768304824829,
+          0.3719792068004608
+        ],
+        "wheel_dof_indices": [
+          3,
+          7,
+          11,
+          15
+        ],
+        "wheel_forward_sign": [
+          1.0,
+          1.0,
+          1.0,
+          1.0
+        ],
+        "wheel_names": [
+          "FL_foot_joint",
+          "FR_foot_joint",
+          "RL_foot_joint",
+          "RR_foot_joint"
+        ]
+      },
+      "wheel_slip_lateral_only": {
+        "runtime_wheel_slip_mean": 0.04996639862656593,
+        "slip_forward": 0.0,
+        "slip_lateral": 4.0
+      }
+    },
+    "status": "PASS"
+  },
+  "2": {
+    "checks": {
+      "base_height_offset_gating": {
+        "base_target": 0.34,
+        "mask_ratio": 0.5,
+        "offset": 0.06
+      },
+      "commands2_update_path": {
+        "allowed_matches": [
+          "legged_gym/legged_gym/envs/base/legged_robot.py:620: self.commands[:, 2] = delta_yaw",
+          "legged_gym/legged_gym/scripts/play.py:50: env.commands[:, 2] = delta_yaw",
+          "legged_gym/legged_gym/scripts/play.py:146: 'delta_yaw_cmd': env.commands[robot_index, 2].item(),"
+        ],
+        "matches": [
+          "legged_gym/legged_gym/envs/base/legged_robot_config.py:125: heading_command = True # legacy flag; commands[:, 2] now stores target yaw directly",
+          "legged_gym/legged_gym/envs/base/legged_robot.py:514: return torch.clamp(self.commands[:, 2], -torch.pi, torch.pi)",
+          "legged_gym/legged_gym/envs/base/legged_robot.py:620: self.commands[:, 2] = delta_yaw",
+          "legged_gym/legged_gym/envs/base/legged_robot.py:1459: # Deprecated yaw-rate command tracking. commands[:, 2] is delta yaw.",
+          "legged_gym/legged_gym/envs/base/legged_robot.py:1466: delta_yaw = self.commands[:, 2]",
+          "legged_gym/legged_gym/envs/go2w/go2w_robot.py:207: heading = self._get_base_yaw() + self.commands[:, 2]",
+          "legged_gym/legged_gym/scripts/play.py:50: env.commands[:, 2] = delta_yaw",
+          "legged_gym/legged_gym/scripts/play.py:146: 'delta_yaw_cmd': env.commands[robot_index, 2].item(),"
+        ]
+      },
+      "delta_yaw_step_update": {
+        "commands2_range": [
+          -1.3901185989379883,
+          -0.1645526885986328
+        ],
+        "max_delta_yaw_error": 0.0
+      },
+      "final_goal_reset_clear": {
+        "failed_reset_reward_mean": 1.0
+      },
+      "obstacle_mask_height_diff": {
+        "flat_mask_ratio": 0.5,
+        "synthetic_mask": [
+          false,
+          true,
+          true
+        ]
+      },
+      "stage0_stop_slow": {
+        "moving": {
+          "cmd_speed_mean": 0.20000000298023224,
+          "goal_reward_mean": 0.9661279916763306,
+          "target_speed_mean": 0.20000000298023224
+        },
+        "slow_below_threshold": {
+          "cmd_speed_mean": 0.029999999329447746,
+          "goal_reward_mean": 0.9830636978149414,
+          "target_speed_mean": 0.0
+        },
+        "stop": {
+          "cmd_speed_mean": 0.0,
+          "goal_reward_mean": 0.9830636978149414,
+          "target_speed_mean": 0.0
+        }
+      },
+      "tracking_delta_yaw_cos": {
+        "delta_yaw": [
+          0.0,
+          1.5707963705062866,
+          -1.5707963705062866,
+          3.1415927410125732
+        ],
+        "reward": [
+          1.0,
+          0.4999999701976776,
+          0.4999999701976776,
+          0.0
+        ]
+      },
+      "wheel_forward_sign": {
+        "effective_wheel_vel_mean": [
+          1.1475967168807983,
+          5.434298038482666,
+          0.6014005541801453,
+          -0.4850684106349945
+        ],
+        "wheel_dof_indices": [
+          3,
+          7,
+          11,
+          15
+        ],
+        "wheel_forward_sign": [
+          1.0,
+          1.0,
+          1.0,
+          1.0
+        ],
+        "wheel_names": [
+          "FL_foot_joint",
+          "FR_foot_joint",
+          "RL_foot_joint",
+          "RR_foot_joint"
+        ]
+      },
+      "wheel_slip_lateral_only": {
+        "runtime_wheel_slip_mean": 0.006178292911499739,
+        "slip_forward": 0.0,
+        "slip_lateral": 4.0
+      }
+    },
+    "status": "PASS"
+  }
+}
