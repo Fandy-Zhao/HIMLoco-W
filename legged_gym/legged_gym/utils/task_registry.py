@@ -59,6 +59,65 @@ class TaskRegistry():
         # copy seed
         env_cfg.seed = train_cfg.seed
         return env_cfg, train_cfg
+
+    def apply_go2w_stage2_reward_scales(self, env_cfg):
+        scales = env_cfg.rewards.scales
+
+        scales.tracking_goal_vel = 5.0
+        scales.tracking_goal_yaw = 0.6
+        scales.reach_goal = 1.5
+        scales.finish_course = 8.0
+
+        scales.wheel_clearance_near_obstacle = 1.0
+        scales.base_height_over_obstacle = 0.8
+        scales.wheel_climb_drive = 0.1
+        scales.wheel_spin_without_progress = -0.02
+
+        scales.lin_vel_z = -0.8
+        scales.ang_vel_xy = -0.03
+        scales.orientation = -0.2
+        scales.base_height = -0.25
+
+        scales.dof_vel = -5e-5
+        scales.dof_acc = -1e-7
+        scales.action_rate = -0.005
+
+        scales.collision = -0.3
+        scales.dof_pos_limits = -0.5
+        scales.hip_action_l2 = -0.05
+
+        scales.wheel_slip = 0.0
+        scales.wheel_lateral_slip = -0.3
+
+        scales.tracking_lin_vel = 0.0
+        scales.tracking_ang_vel = 0.5
+        scales.torques = -1e-5
+        scales.wheel_vel_smooth = -1e-7
+        scales.termination = -0.8
+
+        scales.feet_air_time = 0.0
+        scales.foot_clearance = 0.0
+        scales.feet_clearance = 0.0
+        scales.feet_stumble = 0.0
+        scales.stumble = 0.0
+        scales.wheel_torque = 0.0
+
+        env_cfg.rewards.wheel_clearance_target = 0.10
+        env_cfg.rewards.obstacle_height_offset = 0.06
+        env_cfg.asset.penalize_contacts_on = ["base", "trunk", "thigh", "calf"]
+        env_cfg.asset.terminate_after_contacts_on = ["base", "trunk"]
+
+        print("[go2w stage2 reward scales]")
+        for name in [
+            "tracking_goal_vel", "tracking_goal_yaw", "reach_goal", "finish_course",
+            "wheel_clearance_near_obstacle", "base_height_over_obstacle",
+            "wheel_climb_drive", "wheel_spin_without_progress", "wheel_lateral_slip",
+            "wheel_slip", "orientation", "lin_vel_z", "base_height", "action_rate",
+        ]:
+            print(f"  {name}: {getattr(scales, name)}")
+        print(f"  penalize_contacts_on: {env_cfg.asset.penalize_contacts_on}")
+        print(f"  terminate_after_contacts_on: {env_cfg.asset.terminate_after_contacts_on}")
+        return env_cfg
     
     def make_env(self, name, args=None, env_cfg=None) -> Tuple[VecEnv, Any]:
         """ Creates an environment either from a registered namme or from the provided config file.
@@ -119,8 +178,8 @@ class TaskRegistry():
             0: {'parkour_flat': 1.0},
             1: {'parkour_hurdle': 2.0, 'parkour_flat': 1.5, 'parkour_step': 1.0, 'parkour_gap': 1.0},
             2: {
-                'parkour_hurdle': 0.8, 'parkour_flat': 0.2, 'parkour_step': 0., 'parkour_gap': 0.2, 'parkour_wall': 0.2,
-                'T_step_stl': 0.2, 'Slope': 0.2, 'BridgeA': 0.2, 'BridgeB': 0.2,
+                'parkour_hurdle': 0.2, 'parkour_flat': 0.2, 'parkour_step': 0., 'parkour_gap': 0., 'parkour_wall': 0.4,
+                'T_step_stl': 0.4, 'Slope': 0.4, 'BridgeA': 0.4, 'BridgeB': 0.,
             },
             4: {'parkour_flat': 1.0},
         }
@@ -141,12 +200,20 @@ class TaskRegistry():
             env_cfg.terrain.terrain_extra_proportions = extra_props
 
             if stage == 4:
+                # Stage 4 currently emphasizes waypoint progress and posture.
+                # This is not suitable for flat command-following pretraining:
+                # _reward_tracking_goal_vel is an unbounded progress-speed reward
+                # in the current implementation, so a large scale can encourage
+                # overspeed unless that reward is changed to track a target speed.
                 env_cfg.rewards.scales.tracking_goal_vel = 9
                 env_cfg.rewards.scales.lin_vel_z = -6
                 env_cfg.rewards.scales.ang_vel_xy = -0.3
                 env_cfg.rewards.scales.orientation = -10.0
                 env_cfg.rewards.tracking_sigma = 0.05
                 env_cfg.commands.ranges.lin_vel_x = [0.0, 0.8]
+            elif stage == 2 and getattr(env_cfg.asset, 'name', '') == 'go2w':
+                env_cfg = self.apply_go2w_stage2_reward_scales(env_cfg)
+                env_cfg.commands.ranges.lin_vel_x = [0.0, 1.5]
 
         if train_cfg is not None:
             print("Set train learning stage to {}".format(stage))

@@ -194,7 +194,18 @@ class LeggedRobot(BaseTask):
         self._reset_root_states(env_ids)
 
         self._resample_commands(env_ids)
+
+        goal_success_rate = None
+        if hasattr(self, 'cur_goal_idx') and hasattr(self, 'reached_goal'):
+            valid_goal_eps = self.env_has_goals[env_ids] if hasattr(self, 'env_has_goals') else torch.ones(len(env_ids), dtype=torch.bool, device=self.device)
+            if torch.any(valid_goal_eps):
+                final_goal_idx = max(int(getattr(self.cfg.terrain, 'num_goals', 1)) - 1, 0)
+                goal_success = (self.cur_goal_idx[env_ids] >= final_goal_idx) & self.reached_goal[env_ids]
+                goal_success_rate = torch.mean(goal_success[valid_goal_eps].float())
+
         self._reset_goals(env_ids)
+        self._update_goals()
+        self._update_goal_yaw_command()
 
         # reset buffers
         self.last_actions[env_ids] = 0.
@@ -223,6 +234,8 @@ class LeggedRobot(BaseTask):
         for key in self.episode_sums.keys():
             self.extras["episode"]['rew_' + key] = torch.mean(self.episode_sums[key][env_ids] / torch.clip(self.episode_length_buf[env_ids], min=1) / self.dt)
             self.episode_sums[key][env_ids] = 0.
+        if goal_success_rate is not None:
+            self.extras["episode"]["goal_success_rate"] = goal_success_rate
         # log additional curriculum info
         if self.cfg.terrain.curriculum:
             self.extras["episode"]["terrain_level"] = torch.mean(self.terrain_levels.float())
@@ -605,7 +618,7 @@ class LeggedRobot(BaseTask):
         Args:
             env_ids (List[int]): Environments ids for which new commands are needed
         """
-        self.commands[env_ids, 0] = torch_rand_float(-1.0, 1.0, (len(env_ids), 1), device=self.device).squeeze(1)
+        self.commands[env_ids, 0] = torch_rand_float(self.command_ranges["lin_vel_x"][0], self.command_ranges["lin_vel_x"][1], (len(env_ids), 1), device=self.device).squeeze(1)
         self.commands[env_ids, 1] = torch_rand_float(self.command_ranges["lin_vel_y"][0], self.command_ranges["lin_vel_y"][1], (len(env_ids), 1), device=self.device).squeeze(1)
         if self.cfg.commands.heading_command:
             self.commands[env_ids, 3] = torch_rand_float(self.command_ranges["heading"][0], self.command_ranges["heading"][1], (len(env_ids), 1), device=self.device).squeeze(1)
@@ -1306,13 +1319,22 @@ class LeggedRobot(BaseTask):
 
         env_ids = torch.arange(self.num_envs, device=self.device)
         cur_goal = self.env_goals[env_ids, self.cur_goal_idx]
+
         target_vec = cur_goal[:, :2] - self.root_states[:, :2]
         target_dir = target_vec / (torch.norm(target_vec, dim=1, keepdim=True) + 1e-6)
+
         vel_to_goal = torch.sum(target_dir * self.root_states[:, 7:9], dim=1)
-        reward = torch.clamp(vel_to_goal, min=0.0)
+
+        cmd_speed = torch.norm(self.commands[:, :2], dim=1)
+        target_speed = cmd_speed
+
+        reward = torch.exp(
+            -torch.square(vel_to_goal - target_speed) / self.cfg.rewards.tracking_sigma
+        )
 
         if hasattr(self, 'env_has_goals'):
             reward[~self.env_has_goals] = 0.0
+
         return reward
 
     def _reward_tracking_goal_yaw(self):

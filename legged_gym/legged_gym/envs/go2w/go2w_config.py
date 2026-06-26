@@ -25,7 +25,7 @@ class GO2WRoughCfg(LeggedRobotCfg):
         goal_yaw_rate_clip = 2.0
 
         class ranges(LeggedRobotCfg.commands.ranges):
-            lin_vel_x = [0, 3]
+            lin_vel_x = [0, 5]
             lin_vel_y = [0, 0]
             ang_vel_yaw = [0, 0]
             heading = [-3.14, 3.14]
@@ -153,38 +153,44 @@ class GO2WRoughCfg(LeggedRobotCfg):
         wheel_torque_weight = 0.5
         wheel_acc_weight = 0.2
         wheel_action_rate_weight = 0.5
+        wheel_clearance_target = 0.10
+        obstacle_height_offset = 0.06
 
         class scales(LeggedRobotCfg.rewards.scales):
+            # Stage 0 is meant to learn stable flat-ground go2w locomotion first.
+            # Keep command tracking dominant here; waypoint progress rewards can
+            # be re-enabled later for parkour/navigation stages after speed
+            # tracking and posture are reliable.
             termination = -0.8
-            tracking_lin_vel = 5.0    #指令跟随
-            tracking_ang_vel = 0.5    #朝向目标点，最好降低
-            lin_vel_z = -2.0
-            ang_vel_xy = -0.05
-            orientation = -1.0
-            torques = -1e-5
-            dof_vel = -1e-4
-            dof_acc = -2.5e-7
-            base_height = -0.5
+            tracking_lin_vel = 10.0    # Main flat-ground objective: follow commands[:, :2]. Keep high to prevent overspeed.
+            tracking_ang_vel = 1.5    # Tracks commands[:, 2]; with goal yaw enabled this helps rotate toward the waypoint smoothly.
+            lin_vel_z = -2.0          # Suppress bouncing/hopping; increase if base vertical velocity grows.
+            ang_vel_xy = -0.05        # Mild roll/pitch angular-rate penalty; keep mild unless posture becomes visibly unstable.
+            orientation = -1.0        # Posture stabilization. Current play metrics look stable, so avoid over-stiffening it.
+            torques = -1e-5           # Very light energy regularization; increasing too much can weaken wheel drive.
+            dof_vel = -1e-4           # Mild leg joint velocity regularization, wheel DOFs are excluded in go2w_robot.py.
+            dof_acc = -2.5e-7         # Mild smoothness term; keep small to avoid suppressing useful gait transitions.
+            base_height = -0.5        # Keeps chassis near base_height_target without dominating velocity tracking.
             feet_air_time = 0.0
             foot_clearance = 0.0
             feet_clearance = 0.0
-            collision = -0.5
+            collision = -0.5          # Penalizes thigh/calf/base contacts. Current collision rate is low, so this is enough.
             feet_stumble = 0.0
             stumble = 0.0
-            action_rate = -0.01
-            stand_still = -0.01
-            dof_pos_limits = -0.9
+            action_rate = -0.01       # Smooths policy outputs; increase only if actions are visibly jittery.
+            stand_still = -0.01       # Only affects near-zero speed commands; low impact for current forward-walk training.
+            dof_pos_limits = -0.9     # Strong guard against joint-limit exploitation.
             dof_vel_limits = -0.0
             torque_limits = -0.0
             arm_pos = -0.0
-            hip_action_l2 = -0.1
-            tracking_goal_vel = 0.0        #会影响指令跟随
-            tracking_goal_yaw = 0.2        #朝向目标点
-            reach_goal = 0.5
+            hip_action_l2 = -0.1      # Discourages excessive hip swing while still allowing leg posture adjustment.
+            tracking_goal_vel = 1.0   # Keep disabled in stage 0: current implementation rewards unbounded progress speed, not command tracking.
+            tracking_goal_yaw = 0.6   # Small waypoint-facing bias. Lower/disable if it fights straight-line yaw-rate tracking.
+            reach_goal = 0.5          # Sparse waypoint bonus. Acceptable on parkour_flat; reduce if it encourages rushing.
             finish_course = 0.0
-            wheel_torque = 0.0
-            wheel_vel_smooth = -1e-6       #会导致拖着轮子在走
-            wheel_slip = -0.3
+            wheel_torque = 0.0        # Disabled for now; torque penalties can underpower wheel acceleration.
+            wheel_vel_smooth = -1e-7  # Very light wheel speed smoothing; stronger values may make the robot drag wheels.
+            wheel_slip = -0.1         # Important for go2w: discourages high-speed wheel spin/sliding without blocking motion.
 
 
 class GO2WRoughCfgPPO(LeggedRobotCfgPPO):

@@ -41,6 +41,38 @@ import numpy as np
 import torch
 
 
+def _apply_play_commands(env, x_vel, y_vel, yaw_vel):
+    env.commands[:, 0] = x_vel
+    env.commands[:, 1] = y_vel
+
+    use_goal_yaw = bool(getattr(env.cfg.commands, 'use_goal_yaw_command', False))
+    if use_goal_yaw and hasattr(env, 'env_has_goals'):
+        no_goal_envs = ~env.env_has_goals
+        if torch.any(no_goal_envs):
+            env.commands[no_goal_envs, 2] = yaw_vel
+        if hasattr(env, '_update_goals'):
+            env._update_goals()
+        if hasattr(env, '_update_goal_yaw_command'):
+            env._update_goal_yaw_command()
+    else:
+        env.commands[:, 2] = yaw_vel
+
+
+def _sync_play_command_obs(env):
+    if not hasattr(env, 'obs_buf') or not hasattr(env, 'commands_scale'):
+        return env.get_observations()
+
+    one_step_obs = int(getattr(env, 'num_one_step_obs', 0))
+    if one_step_obs <= 9 or env.obs_buf.shape[1] < 9:
+        return env.get_observations()
+
+    command_obs = env.commands[:, :3] * env.commands_scale
+    for start in range(0, env.obs_buf.shape[1], one_step_obs):
+        if start + 9 <= env.obs_buf.shape[1]:
+            env.obs_buf[:, start + 6:start + 9] = command_obs
+    return env.get_observations()
+
+
 def play(args, x_vel=1.0, y_vel=0.0, yaw_vel=0.0):
     check_cuda_runtime_compat()
     env_cfg, train_cfg = task_registry.get_cfgs(name=args.task)
@@ -62,11 +94,10 @@ def play(args, x_vel=1.0, y_vel=0.0, yaw_vel=0.0):
     if args.web:
         web_viewer = webviewer.WebViewer()
         web_viewer.setup(env)
-    env.commands[:, 0] = x_vel
-    env.commands[:, 1] = y_vel
-    env.commands[:, 2] = yaw_vel
+    _apply_play_commands(env, x_vel, y_vel, yaw_vel)
+    env.compute_observations()
 
-    obs = env.get_observations()
+    obs = _sync_play_command_obs(env)
     # load policy
     train_cfg.runner.resume = True
     ppo_runner, train_cfg = task_registry.make_alg_runner(env=env, name=args.task, args=args, train_cfg=train_cfg)
@@ -92,10 +123,9 @@ def play(args, x_vel=1.0, y_vel=0.0, yaw_vel=0.0):
     for i in range(10*int(env.max_episode_length)):
     
         actions = policy(obs.detach())
-        env.commands[:, 0] = x_vel
-        env.commands[:, 1] = y_vel
-        env.commands[:, 2] = yaw_vel
         obs, _, rews, dones, infos, _, _ = env.step(actions.detach())
+        _apply_play_commands(env, x_vel, y_vel, yaw_vel)
+        obs = _sync_play_command_obs(env)
 
         if args.web:
             web_viewer.render(fetch_results=True,

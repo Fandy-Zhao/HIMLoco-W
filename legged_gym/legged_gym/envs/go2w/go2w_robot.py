@@ -204,3 +204,102 @@ class Go2w(LeggedRobot):
 
     def _reward_hip_action_l2(self):
         return torch.sum(self.actions[:, [0, 4, 8, 12]] ** 2, dim=1)
+
+    def _get_obstacle_ahead_mask(self):
+        mask = torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)
+        if hasattr(self, 'env_has_goals'):
+            mask |= self.env_has_goals
+
+        for name in [
+            'terrain_idx_parkour_hurdle',
+            'terrain_idx_parkour_step',
+            'terrain_idx_parkour_gap',
+            'terrain_idx_parkour_wall',
+            'terrain_idx_T_step_stl',
+            'terrain_idx_Slope',
+            'terrain_idx_BridgeA',
+            'terrain_idx_BridgeB',
+        ]:
+            if hasattr(self.cfg.terrain, name):
+                mask |= self._terrain_is(getattr(self.cfg.terrain, name))
+        return mask
+
+    def _get_heights_at_points(self, points_xy):
+        if self.cfg.terrain.mesh_type == 'plane':
+            return torch.zeros(points_xy.shape[:2], dtype=torch.float, device=self.device)
+        if not hasattr(self, 'height_samples') or not hasattr(self, 'terrain'):
+            return torch.mean(self.measured_heights, dim=1, keepdim=True).repeat(1, points_xy.shape[1])
+
+        points = points_xy + self.terrain.cfg.border_size
+        points = (points / self.terrain.cfg.horizontal_scale).long()
+        px = torch.clip(points[:, :, 0].reshape(-1), 0, self.height_samples.shape[0] - 2)
+        py = torch.clip(points[:, :, 1].reshape(-1), 0, self.height_samples.shape[1] - 2)
+
+        heights1 = self.height_samples[px, py]
+        heights2 = self.height_samples[px + 1, py]
+        heights3 = self.height_samples[px, py + 1]
+        heights = torch.min(torch.min(heights1, heights2), heights3)
+        return heights.view(points_xy.shape[0], points_xy.shape[1]) * self.terrain.cfg.vertical_scale
+
+    def _reward_wheel_lateral_slip(self):
+        if not hasattr(self, 'wheel_body_indices') or not hasattr(self, 'rigid_body_states'):
+            return torch.zeros(self.num_envs, dtype=torch.float, device=self.device)
+
+        rigid_body_state = self.rigid_body_states.view(self.num_envs, self.num_bodies, 13)
+        wheel_vel_world = rigid_body_state[:, self.wheel_body_indices, 7:10]
+        base_quat = self.base_quat.unsqueeze(1).repeat(1, len(self.wheel_body_indices), 1)
+        wheel_vel_body = quat_rotate_inverse(base_quat, wheel_vel_world)
+        lateral_vel = wheel_vel_body[..., 1]
+        wheel_contact = self.contact_forces[:, self.wheel_body_indices, 2] > 1.0
+
+        reward = torch.sum(torch.square(lateral_vel) * wheel_contact.float(), dim=1)
+        return self._mask_invalid_terrain_reward(reward)
+
+    def _reward_wheel_clearance_near_obstacle(self):
+        if not hasattr(self, 'wheel_body_indices') or not hasattr(self, 'rigid_body_states'):
+            return torch.zeros(self.num_envs, dtype=torch.float, device=self.device)
+
+        rigid_body_state = self.rigid_body_states.view(self.num_envs, self.num_bodies, 13)
+        wheel_pos = rigid_body_state[:, self.wheel_body_indices, :3]
+        terrain_h = self._get_heights_at_points(wheel_pos[..., :2])
+        clearance = wheel_pos[..., 2] - terrain_h
+        target = getattr(self.cfg.rewards, 'wheel_clearance_target', 0.10)
+        err = torch.square(clearance - target)
+
+        wheel_contact = self.contact_forces[:, self.wheel_body_indices, 2] > 1.0
+        reward = torch.sum(torch.exp(-err / 0.01) * (~wheel_contact).float(), dim=1)
+        reward *= self._get_obstacle_ahead_mask().float()
+        return self._mask_invalid_terrain_reward(reward)
+
+    def _reward_base_height_over_obstacle(self):
+        if not hasattr(self, 'measured_heights'):
+            return torch.zeros(self.num_envs, dtype=torch.float, device=self.device)
+
+        base_height = torch.mean(self.root_states[:, 2].unsqueeze(1) - self.measured_heights, dim=1)
+        target = self.cfg.rewards.base_height_target + getattr(self.cfg.rewards, 'obstacle_height_offset', 0.06)
+        reward = torch.exp(-torch.square(base_height - target) / 0.02)
+        reward *= self._get_obstacle_ahead_mask().float()
+        return self._mask_invalid_terrain_reward(reward)
+
+    def _reward_wheel_climb_drive(self):
+        if not hasattr(self, 'wheel_dof_indices') or not hasattr(self, 'wheel_body_indices'):
+            return torch.zeros(self.num_envs, dtype=torch.float, device=self.device)
+
+        wheel_vel = self.dof_vel[:, self.wheel_dof_indices]
+        positive_wheel_spin = torch.clamp(wheel_vel, min=0.0)
+        forward_vel = torch.clamp(self.base_lin_vel[:, 0], min=0.0).unsqueeze(1)
+        wheel_contact = self.contact_forces[:, self.wheel_body_indices, 2] > 1.0
+
+        reward = torch.sum(positive_wheel_spin * forward_vel * wheel_contact.float(), dim=1)
+        reward *= self._get_obstacle_ahead_mask().float()
+        return self._mask_invalid_terrain_reward(reward)
+
+    def _reward_wheel_spin_without_progress(self):
+        if not hasattr(self, 'wheel_dof_indices'):
+            return torch.zeros(self.num_envs, dtype=torch.float, device=self.device)
+
+        wheel_speed = torch.abs(self.dof_vel[:, self.wheel_dof_indices])
+        low_progress = torch.abs(self.base_lin_vel[:, 0]) < 0.05
+        reward = torch.sum(wheel_speed, dim=1) * low_progress.float()
+        reward *= self._get_obstacle_ahead_mask().float()
+        return self._mask_invalid_terrain_reward(reward)
