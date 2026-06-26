@@ -128,7 +128,7 @@ class Go2w(LeggedRobot):
         current_obs = torch.cat((
             self.base_ang_vel * self.obs_scales.ang_vel,
             self.projected_gravity,
-            self.commands[:, :3] * self.commands_scale,
+            self._get_command_obs(),
             dof_err * self.obs_scales.dof_pos,
             self.dof_vel * self.obs_scales.dof_vel,
             dof_pos_obs,
@@ -162,23 +162,18 @@ class Go2w(LeggedRobot):
     def check_termination(self):
         self.reset_buf = torch.any(torch.norm(self.contact_forces[:, self.termination_contact_indices, :], dim=-1) > 1., dim=1)
         self.time_out_buf = self.episode_length_buf > self.max_episode_length
+        self.final_goal_reset_buf = self._check_final_goal_termination()
         self.reset_buf |= self.time_out_buf
-        self.reset_buf |= self._check_final_goal_termination()
+        self.reset_buf |= self.final_goal_reset_buf
         if self.cfg.terrain.measure_heights:
             contact_flag = torch.mean(self.root_states[:, 2].unsqueeze(1) - self.measured_heights, dim=1)
             self.reset_buf |= contact_flag < 0.20
 
     def _reward_base_height(self):
         base_height = torch.mean(self.root_states[:, 2].unsqueeze(1) - self.measured_heights, dim=1)
-        reward = torch.square(base_height - self.cfg.rewards.base_height_target)
-        relaxed_mask = torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)
-        if hasattr(self, 'env_has_goals'):
-            relaxed_mask |= self.env_has_goals
-        for name in ['terrain_idx_Slope', 'terrain_idx_BridgeA', 'terrain_idx_BridgeB']:
-            if hasattr(self.cfg.terrain, name):
-                relaxed_mask |= self._terrain_is(getattr(self.cfg.terrain, name))
-        reward[relaxed_mask] *= 0.5
-        return reward
+        obstacle_mask = self._get_obstacle_ahead_mask() if hasattr(self, '_get_obstacle_ahead_mask') else torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)
+        target = float(getattr(self.cfg.rewards, 'base_height_target', 0.34)) + float(getattr(self.cfg.rewards, 'obstacle_height_offset', 0.0)) * obstacle_mask.float()
+        return torch.square(base_height - target)
 
     def _reward_dof_vel(self):
         if not hasattr(self, 'leg_dof_indices'):
@@ -207,8 +202,6 @@ class Go2w(LeggedRobot):
 
     def _get_obstacle_ahead_mask(self):
         mask = torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)
-        if hasattr(self, 'env_has_goals'):
-            mask |= self.env_has_goals
 
         for name in [
             'terrain_idx_parkour_hurdle',
@@ -242,6 +235,9 @@ class Go2w(LeggedRobot):
         return heights.view(points_xy.shape[0], points_xy.shape[1]) * self.terrain.cfg.vertical_scale
 
     def _reward_wheel_lateral_slip(self):
+        return self._reward_wheel_slip()
+
+    def _reward_wheel_slip(self):
         if not hasattr(self, 'wheel_body_indices') or not hasattr(self, 'rigid_body_states'):
             return torch.zeros(self.num_envs, dtype=torch.float, device=self.device)
 
@@ -256,6 +252,9 @@ class Go2w(LeggedRobot):
         return self._mask_invalid_terrain_reward(reward)
 
     def _reward_wheel_clearance_near_obstacle(self):
+        return self._reward_wheel_clearance()
+
+    def _reward_wheel_clearance(self):
         if not hasattr(self, 'wheel_body_indices') or not hasattr(self, 'rigid_body_states'):
             return torch.zeros(self.num_envs, dtype=torch.float, device=self.device)
 
@@ -272,14 +271,7 @@ class Go2w(LeggedRobot):
         return self._mask_invalid_terrain_reward(reward)
 
     def _reward_base_height_over_obstacle(self):
-        if not hasattr(self, 'measured_heights'):
-            return torch.zeros(self.num_envs, dtype=torch.float, device=self.device)
-
-        base_height = torch.mean(self.root_states[:, 2].unsqueeze(1) - self.measured_heights, dim=1)
-        target = self.cfg.rewards.base_height_target + getattr(self.cfg.rewards, 'obstacle_height_offset', 0.06)
-        reward = torch.exp(-torch.square(base_height - target) / 0.02)
-        reward *= self._get_obstacle_ahead_mask().float()
-        return self._mask_invalid_terrain_reward(reward)
+        return torch.zeros(self.num_envs, dtype=torch.float, device=self.device)
 
     def _reward_wheel_climb_drive(self):
         if not hasattr(self, 'wheel_dof_indices') or not hasattr(self, 'wheel_body_indices'):

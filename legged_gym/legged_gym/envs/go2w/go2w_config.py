@@ -16,19 +16,17 @@ class GO2WRoughCfg(LeggedRobotCfg):
     class commands(LeggedRobotCfg.commands):
         curriculum = True
         max_curriculum = 1.5
-        num_commands = 4
+        num_commands = 3
         resampling_time = 10.
         heading_command = False
         use_goal_yaw_command = True
         goal_yaw_fallback_random = True
-        goal_yaw_kp = 0.5
-        goal_yaw_rate_clip = 2.0
 
         class ranges(LeggedRobotCfg.commands.ranges):
             lin_vel_x = [0, 5]
             lin_vel_y = [0, 0]
-            ang_vel_yaw = [0, 0]
-            heading = [-3.14, 3.14]
+            ang_vel_yaw = [0, 0]  # legacy unused yaw-rate range
+            heading = [-3.1416, 3.1416]
 
     class terrain(LeggedRobotCfg.terrain):
         mesh_type = 'trimesh'
@@ -155,6 +153,12 @@ class GO2WRoughCfg(LeggedRobotCfg):
         wheel_action_rate_weight = 0.5
         wheel_clearance_target = 0.10
         obstacle_height_offset = 0.06
+        heading_sigma = 0.25
+        delta_yaw_sigma = 0.25
+        min_goal_speed = 0.2
+        max_goal_speed = 0.8
+        use_fixed_goal_speed = False
+        fixed_goal_speed = 0.4
 
         class scales(LeggedRobotCfg.rewards.scales):
             # Stage 0 is meant to learn stable flat-ground go2w locomotion first.
@@ -163,7 +167,7 @@ class GO2WRoughCfg(LeggedRobotCfg):
             # tracking and posture are reliable.
             termination = -0.8
             tracking_lin_vel = 10.0    # Main flat-ground objective: follow commands[:, :2]. Keep high to prevent overspeed.
-            tracking_ang_vel = 1.5    # Tracks commands[:, 2]; with goal yaw enabled this helps rotate toward the waypoint smoothly.
+            tracking_ang_vel = 1.5    # Legacy scale name; implementation now tracks heading angle, not yaw rate.
             lin_vel_z = -2.0          # Suppress bouncing/hopping; increase if base vertical velocity grows.
             ang_vel_xy = -0.05        # Mild roll/pitch angular-rate penalty; keep mild unless posture becomes visibly unstable.
             orientation = -1.0        # Posture stabilization. Current play metrics look stable, so avoid over-stiffening it.
@@ -185,7 +189,7 @@ class GO2WRoughCfg(LeggedRobotCfg):
             arm_pos = -0.0
             hip_action_l2 = -0.1      # Discourages excessive hip swing while still allowing leg posture adjustment.
             tracking_goal_vel = 1.0   # Keep disabled in stage 0: current implementation rewards unbounded progress speed, not command tracking.
-            tracking_goal_yaw = 0.6   # Small waypoint-facing bias. Lower/disable if it fights straight-line yaw-rate tracking.
+            tracking_goal_yaw = 0.6   # Small waypoint-facing bias based on target-yaw heading error.
             reach_goal = 0.5          # Sparse waypoint bonus. Acceptable on parkour_flat; reduce if it encourages rushing.
             finish_course = 0.0
             wheel_torque = 0.0        # Disabled for now; torque penalties can underpower wheel acceleration.

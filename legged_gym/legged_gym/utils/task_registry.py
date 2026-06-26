@@ -60,16 +60,73 @@ class TaskRegistry():
         env_cfg.seed = train_cfg.seed
         return env_cfg, train_cfg
 
-    def apply_go2w_stage2_reward_scales(self, env_cfg):
-        scales = env_cfg.rewards.scales
+    def _disable_go2w_redundant_rewards(self, scales):
+        scales.tracking_ang_vel = 0.0
+        scales.tracking_heading = 0.0
+        scales.tracking_goal_yaw = 0.0
+        scales.tracking_goal_vel = 0.0
+        scales.tracking_goal_vel_cmd_scaled = 0.0
+        scales.wheel_lateral_slip = 0.0
+        scales.base_height_over_obstacle = 0.0
+        scales.feet_air_time = 0.0
+        scales.foot_clearance = 0.0
+        scales.feet_clearance = 0.0
+        scales.feet_stumble = 0.0
+        scales.stumble = 0.0
+        scales.wheel_torque = 0.0
 
-        scales.tracking_goal_vel = 5.0
-        scales.tracking_goal_yaw = 0.6
+    def apply_go2w_stage0_scales(self, env_cfg):
+        scales = env_cfg.rewards.scales
+        self._disable_go2w_redundant_rewards(scales)
+
+        scales.tracking_lin_vel = 5.0
+        scales.tracking_delta_yaw = 0.5
+        scales.goal_progress = 0.5
+        scales.reach_goal = 0.5
+        scales.finish_course = 0.0
+
+        scales.lin_vel_z = -2.0
+        scales.ang_vel_xy = -0.05
+        scales.orientation = -1.0
+        scales.base_height = -0.5
+        scales.yaw_rate_l2 = -0.01
+
+        scales.torques = -1e-5
+        scales.dof_vel = -1e-4
+        scales.dof_acc = -2.5e-7
+        scales.action_rate = -0.01
+        scales.hip_action_l2 = -0.1
+        scales.dof_pos_limits = -0.9
+        scales.collision = -0.5
+        scales.termination = -0.8
+
+        scales.wheel_slip = -0.1
+        scales.wheel_vel_smooth = -1e-7
+        scales.wheel_clearance = 0.0
+        scales.wheel_climb_drive = 0.0
+        scales.wheel_spin_without_progress = 0.0
+
+        env_cfg.rewards.delta_yaw_sigma = 0.25
+        env_cfg.rewards.min_goal_speed = 0.1
+        env_cfg.rewards.max_goal_speed = 0.8
+        env_cfg.rewards.obstacle_height_offset = 0.0
+        env_cfg.rewards.wheel_clearance_target = 0.08
+        env_cfg.asset.penalize_contacts_on = ["base", "trunk", "thigh", "calf"]
+        env_cfg.asset.terminate_after_contacts_on = ["base", "trunk"]
+        env_cfg.commands.ranges.lin_vel_y = [0.0, 0.0]
+        return env_cfg
+
+    def apply_go2w_stage2_scales(self, env_cfg):
+        scales = env_cfg.rewards.scales
+        self._disable_go2w_redundant_rewards(scales)
+
+        scales.tracking_lin_vel = 3.0
+        scales.tracking_delta_yaw = 0.8
+        scales.goal_progress = 2.5
         scales.reach_goal = 1.5
         scales.finish_course = 8.0
 
-        scales.wheel_clearance_near_obstacle = 1.0
-        scales.base_height_over_obstacle = 0.8
+        scales.wheel_clearance = 1.0
         scales.wheel_climb_drive = 0.1
         scales.wheel_spin_without_progress = -0.02
 
@@ -86,31 +143,26 @@ class TaskRegistry():
         scales.dof_pos_limits = -0.5
         scales.hip_action_l2 = -0.05
 
-        scales.wheel_slip = 0.0
-        scales.wheel_lateral_slip = -0.3
-
-        scales.tracking_lin_vel = 0.0
-        scales.tracking_ang_vel = 0.5
+        scales.wheel_slip = -0.3
         scales.torques = -1e-5
         scales.wheel_vel_smooth = -1e-7
         scales.termination = -0.8
 
-        scales.feet_air_time = 0.0
-        scales.foot_clearance = 0.0
-        scales.feet_clearance = 0.0
-        scales.feet_stumble = 0.0
-        scales.stumble = 0.0
-        scales.wheel_torque = 0.0
-
         env_cfg.rewards.wheel_clearance_target = 0.10
         env_cfg.rewards.obstacle_height_offset = 0.06
+        env_cfg.rewards.delta_yaw_sigma = 0.25
+        env_cfg.rewards.min_goal_speed = 0.2
+        env_cfg.rewards.max_goal_speed = 0.8
         env_cfg.asset.penalize_contacts_on = ["base", "trunk", "thigh", "calf"]
         env_cfg.asset.terminate_after_contacts_on = ["base", "trunk"]
+        env_cfg.commands.ranges.lin_vel_y = [0.0, 0.0]
 
-        print("[go2w stage2 reward scales]")
+        print("[go2w stage2 delta-yaw reward scales]")
         for name in [
-            "tracking_goal_vel", "tracking_goal_yaw", "reach_goal", "finish_course",
-            "wheel_clearance_near_obstacle", "base_height_over_obstacle",
+            "tracking_delta_yaw", "goal_progress", "reach_goal", "finish_course",
+            "tracking_ang_vel", "tracking_heading", "tracking_goal_yaw",
+            "tracking_goal_vel", "tracking_goal_vel_cmd_scaled",
+            "wheel_clearance", "base_height_over_obstacle",
             "wheel_climb_drive", "wheel_spin_without_progress", "wheel_lateral_slip",
             "wheel_slip", "orientation", "lin_vel_z", "base_height", "action_rate",
         ]:
@@ -199,7 +251,10 @@ class TaskRegistry():
                 extra_props[name] = value
             env_cfg.terrain.terrain_extra_proportions = extra_props
 
-            if stage == 4:
+            if stage == 0 and getattr(env_cfg.asset, 'name', '') == 'go2w':
+                env_cfg = self.apply_go2w_stage0_scales(env_cfg)
+                env_cfg.commands.ranges.lin_vel_x = [0.0, 0.8]
+            elif stage == 4:
                 # Stage 4 currently emphasizes waypoint progress and posture.
                 # This is not suitable for flat command-following pretraining:
                 # _reward_tracking_goal_vel is an unbounded progress-speed reward
@@ -212,7 +267,7 @@ class TaskRegistry():
                 env_cfg.rewards.tracking_sigma = 0.05
                 env_cfg.commands.ranges.lin_vel_x = [0.0, 0.8]
             elif stage == 2 and getattr(env_cfg.asset, 'name', '') == 'go2w':
-                env_cfg = self.apply_go2w_stage2_reward_scales(env_cfg)
+                env_cfg = self.apply_go2w_stage2_scales(env_cfg)
                 env_cfg.commands.ranges.lin_vel_x = [0.0, 1.5]
 
         if train_cfg is not None:

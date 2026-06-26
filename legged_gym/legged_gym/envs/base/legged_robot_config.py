@@ -120,17 +120,15 @@ class LeggedRobotCfg(BaseConfig):
     class commands:
         curriculum = True
         max_curriculum = 3.0
-        num_commands = 4 # default: lin_vel_x, lin_vel_y, ang_vel_yaw, heading (in heading mode ang_vel_yaw is recomputed from heading error)
+        num_commands = 3 # default: lin_vel_x, lin_vel_y, target_yaw
         resampling_time = 10. # time before command are changed[s]
-        heading_command = True # if true: compute ang vel command from heading error
+        heading_command = True # legacy flag; commands[:, 2] now stores target yaw directly
         use_goal_yaw_command = False
         goal_yaw_fallback_random = True
-        goal_yaw_kp = 0.5
-        goal_yaw_rate_clip = 2.0
         class ranges:
             lin_vel_x = [-1.0, 1.0] # min max [m/s]
             lin_vel_y = [-1.0, 1.0]   # min max [m/s]
-            ang_vel_yaw = [-3.14, 3.14]    # min max [rad/s]
+            ang_vel_yaw = [-3.14, 3.14]    # legacy unused yaw-rate range
             heading = [-3.14, 3.14]
 
     class init_state:
@@ -256,6 +254,8 @@ class LeggedRobotCfg(BaseConfig):
         class obs_scales:
             lin_vel = 2.0
             ang_vel = 0.25
+            heading_error = 1.0
+            delta_yaw = 1.0
             dof_pos = 1.0
             dof_vel = 0.05
             height_measurements = 5.0

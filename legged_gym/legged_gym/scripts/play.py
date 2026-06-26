@@ -41,21 +41,13 @@ import numpy as np
 import torch
 
 
-def _apply_play_commands(env, x_vel, y_vel, yaw_vel):
+def _apply_play_commands(env, x_vel, y_vel, delta_yaw=0.0):
     env.commands[:, 0] = x_vel
     env.commands[:, 1] = y_vel
-
-    use_goal_yaw = bool(getattr(env.cfg.commands, 'use_goal_yaw_command', False))
-    if use_goal_yaw and hasattr(env, 'env_has_goals'):
-        no_goal_envs = ~env.env_has_goals
-        if torch.any(no_goal_envs):
-            env.commands[no_goal_envs, 2] = yaw_vel
-        if hasattr(env, '_update_goals'):
-            env._update_goals()
-        if hasattr(env, '_update_goal_yaw_command'):
-            env._update_goal_yaw_command()
+    if hasattr(env, '_update_goal_commands'):
+        env._update_goal_commands()
     else:
-        env.commands[:, 2] = yaw_vel
+        env.commands[:, 2] = delta_yaw
 
 
 def _sync_play_command_obs(env):
@@ -66,14 +58,14 @@ def _sync_play_command_obs(env):
     if one_step_obs <= 9 or env.obs_buf.shape[1] < 9:
         return env.get_observations()
 
-    command_obs = env.commands[:, :3] * env.commands_scale
+    command_obs = env._get_command_obs() if hasattr(env, '_get_command_obs') else env.commands[:, :3] * env.commands_scale
     for start in range(0, env.obs_buf.shape[1], one_step_obs):
         if start + 9 <= env.obs_buf.shape[1]:
             env.obs_buf[:, start + 6:start + 9] = command_obs
     return env.get_observations()
 
 
-def play(args, x_vel=1.0, y_vel=0.0, yaw_vel=0.0):
+def play(args, x_vel=1.0, y_vel=0.0, delta_yaw=0.0):
     check_cuda_runtime_compat()
     env_cfg, train_cfg = task_registry.get_cfgs(name=args.task)
     # override some parameters for testing
@@ -94,7 +86,7 @@ def play(args, x_vel=1.0, y_vel=0.0, yaw_vel=0.0):
     if args.web:
         web_viewer = webviewer.WebViewer()
         web_viewer.setup(env)
-    _apply_play_commands(env, x_vel, y_vel, yaw_vel)
+    _apply_play_commands(env, x_vel, y_vel, delta_yaw)
     env.compute_observations()
 
     obs = _sync_play_command_obs(env)
@@ -124,7 +116,7 @@ def play(args, x_vel=1.0, y_vel=0.0, yaw_vel=0.0):
     
         actions = policy(obs.detach())
         obs, _, rews, dones, infos, _, _ = env.step(actions.detach())
-        _apply_play_commands(env, x_vel, y_vel, yaw_vel)
+        _apply_play_commands(env, x_vel, y_vel, delta_yaw)
         obs = _sync_play_command_obs(env)
 
         if args.web:
@@ -151,7 +143,9 @@ def play(args, x_vel=1.0, y_vel=0.0, yaw_vel=0.0):
                     'dof_torque': env.torques[robot_index, joint_index].item(),
                     'command_x': env.commands[robot_index, 0].item(),
                     'command_y': env.commands[robot_index, 1].item(),
-                    'command_yaw': env.commands[robot_index, 2].item(),
+                    'delta_yaw_cmd': env.commands[robot_index, 2].item(),
+                    'current_yaw': env._get_base_yaw()[robot_index].item() if hasattr(env, '_get_base_yaw') else 0.0,
+                    'heading_error': env._get_heading_error()[robot_index].item() if hasattr(env, '_get_heading_error') else 0.0,
                     'base_vel_x': env.base_lin_vel[robot_index, 0].item(),
                     'base_vel_y': env.base_lin_vel[robot_index, 1].item(),
                     'base_vel_z': env.base_lin_vel[robot_index, 2].item(),
@@ -174,4 +168,4 @@ if __name__ == '__main__':
     RECORD_FRAMES = False
     MOVE_CAMERA = False
     args = get_args()
-    play(args, x_vel=1.0, y_vel=0.0, yaw_vel=0.0)
+    play(args, x_vel=1.0, y_vel=0.0, delta_yaw=0.0)
