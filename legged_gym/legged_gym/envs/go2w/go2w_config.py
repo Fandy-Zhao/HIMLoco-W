@@ -206,7 +206,7 @@ class GO2WRoughCfg(LeggedRobotCfg):
             goal_progress = 1.0
             goal_delta_progress = 2.0
             tracking_delta_yaw = 1.0
-            delta_yaw_progress = 0.5
+            delta_yaw_progress = 0.0
             goal_bonus = 3.0
             lin_vel_z = -2.0
             ang_vel_xy = -0.05
@@ -214,13 +214,13 @@ class GO2WRoughCfg(LeggedRobotCfg):
             base_height = -0.5
             yaw_rate_l2 = -0.01
             torques = -1e-5
-            dof_vel = -1e-4
-            dof_acc = -2.5e-7
             action_rate = -0.01
             dof_pos_limits = -0.9
-            hip_action_l2 = -0.1
+            dof_vel = -5e-5
+            dof_acc = 0.0
+            hip_action_l2 = -0.05
             wheel_slip = -0.1
-            stand_still = -0.01
+            stand_still = 0.0
             collision = -0.5
             wheel_clearance = 0.0
             wheel_climb_drive = 0.0

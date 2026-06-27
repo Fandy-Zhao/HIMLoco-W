@@ -169,24 +169,24 @@ class TaskRegistry():
                 "goal_progress": 1.0,  # 辅助速度跟踪：奖励沿当前目标方向达到命令速度。
                 "goal_delta_progress": 2.0,  # 真实距离进展：奖励向当前 waypoint 缩短距离。
                 "tracking_delta_yaw": 1.0,  # 鼓励机身朝向当前目标方向。
-                "delta_yaw_progress": 0.5,  # 奖励 delta_yaw 误差逐步减小。
+                "delta_yaw_progress": 0.0,  # 关闭，避免和 tracking_delta_yaw 重复。
                 "goal_bonus": 3.0,  # 一次性 waypoint 到达奖励，闭合 goal-following 目标。
                 "wheel_clearance": 0.0,  # 关闭轮子抬高奖励；stage0 不训练越障动作。
                 "wheel_climb_drive": 0.0,  # 关闭障碍附近轮子驱动奖励；stage0 只学基础行驶。
-                "wheel_spin_without_progress": -1e-4,  # 很轻的空转惩罚，抑制轮子高速转但不前进。
                 "wheel_slip": -0.1,  # 轻惩罚轮子横向滑移，减少侧滑但不过度限制探索。
+                "wheel_spin_without_progress": -1e-4,  # 很轻的空转惩罚，抑制轮子高速转但不前进。
                 "base_height": -0.5,  # 惩罚基座高度偏离目标高度，保持基础站姿。
                 "orientation": -1.0,  # 惩罚 roll/pitch 倾斜，平地阶段保持身体稳定。
                 "lin_vel_z": -2.0,  # 惩罚垂直速度，抑制跳动和弹跳。
                 "ang_vel_xy": -0.05,  # 惩罚 roll/pitch 角速度，减少身体晃动。
                 "yaw_rate_l2": -0.01,  # 轻惩罚 yaw 角速度，避免无意义快速自旋。
                 "torques": -1e-5,  # 轻能耗惩罚，限制关节/轮子力矩过大。
-                "dof_vel": -1e-4,  # 惩罚腿部关节速度，提升动作平滑性。
-                "dof_acc": -2.5e-7,  # 惩罚关节加速度，降低抖动。
                 "action_rate": -0.01,  # 惩罚连续 action 差分，减少控制突变。
                 "dof_pos_limits": -0.9,  # 惩罚腿部关节接近限位，保护可行姿态空间。
-                "hip_action_l2": -0.1,  # 抑制髋关节大幅动作，减少外摆和不稳定姿态。
-                "stand_still": -0.01,  # 零/低速命令下惩罚腿部偏离默认姿态。
+                "dof_vel": -5e-5,  # 弱化腿部关节速度惩罚，避免和 action_rate 过度重复。
+                "dof_acc": 0.0,  # 关闭，保留 action_rate 作为主要动作平滑项。
+                "hip_action_l2": -0.05,  # 弱化髋关节动作惩罚，保留基础稳定约束。
+                "stand_still": 0.0,  # 关闭，当前任务以 goal-following / parkour 为主。
                 "collision": -0.5,  # 惩罚非允许部位接触，减少躯干/腿部碰撞。
                 "termination": -0.8,  # 失败终止惩罚，区分正常超时和跌倒/碰撞终止。
             },
@@ -217,10 +217,10 @@ class TaskRegistry():
         },
         "stage2": {
             "scales": {
-                "goal_progress": 0.5,  # 辅助速度约束：保持朝目标速度合理，不作为主推进信号。
+                "goal_progress": 0.0,  # 关闭速度跟踪，Stage2 只依赖真实目标距离进展。
                 "goal_delta_progress": 3.0,  # 主推进奖励：按当前步到目标距离减少速度给奖。
                 "tracking_delta_yaw": 1.0,  # 强化朝向目标，帮助复杂地形上对准障碍入口。
-                "delta_yaw_progress": 0.5,  # 奖励转向误差下降，避免只靠静态朝向奖励。
+                "delta_yaw_progress": 0.0,  # 关闭，避免受 waypoint 切换影响并减少重复 shaping。
                 "goal_bonus": 5.0,  # 一次性路点到达奖励，配合 final_goal_bonus 奖励完成整段路线。
                 "wheel_clearance": -0.8,  # 障碍附近惩罚摆动轮轮心低于目标高度。
                 "wheel_climb_drive": 0.0,  # 保持关闭，不加入额外越障驱动 shaping。
@@ -228,16 +228,16 @@ class TaskRegistry():
                 "wheel_slip": -0.1,  # 轻惩罚轮子横向滑移，避免压制必要越障探索。
                 "base_height": -0.2,  # 弱化基座高度惩罚，允许越障时抬高或压低身体。
                 "orientation": -0.5,  # 相对 stage0 放松姿态惩罚，但保留稳定性约束。
-                "lin_vel_z": -0.5,  # 允许上台阶/落地时短时竖直速度。
+                "lin_vel_z": 0.0,  # 关闭，避免抑制上台阶、过沟和短时抬身。
                 "ang_vel_xy": -0.03,  # 轻惩罚 roll/pitch 角速度，允许必要的身体摆动。
                 "yaw_rate_l2": -0.005,  # 条件 yaw-rate 惩罚：delta_yaw 小时才主要生效。
                 "torques": -1e-5,  # 保持能耗正则，防止靠极端力矩过障。
-                "dof_vel": -5e-5,  # 比 stage0 更弱的腿部速度惩罚，给越障动作留自由度。
-                "dof_acc": -1e-7,  # 比 stage0 更弱的加速度惩罚，减少对快速调整的限制。
+                "dof_vel": 0.0,  # 关闭，避免抑制越障动作。
+                "dof_acc": 0.0,  # 关闭，保留 action_rate 作为最小平滑项。
                 "action_rate": -0.005,  # 比 stage0 更弱的 action 平滑惩罚，允许越障时快速修正。
                 "dof_pos_limits": -0.9,  # 保留限位保护，避免越障时进入不可恢复姿态。
-                "hip_action_l2": -0.02,  # 轻惩罚髋关节大动作，避免越障时过度外摆。
-                "stand_still": -0.005,  # 低速命令下仍保留很弱的默认姿态约束。
+                "hip_action_l2": 0.0,  # 关闭，允许 hip 用于转向和越障。
+                "stand_still": 0.0,  # 关闭，默认站姿不是 Stage2 核心目标。
                 "collision": -0.5,  # 保持安全约束，避免躯干/腿部碰撞成为过障策略。
                 "termination": -1.5,  # 增强失败终止惩罚，stage2 更明确区分摔倒/成功结束。
             },

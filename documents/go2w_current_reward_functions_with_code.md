@@ -31,10 +31,10 @@ Go2W stage profile 会在 `task_registry.py` 中通过 `--stage 0` / `--stage 2`
 
 | Reward | Stage0 scale | Stage2 scale | 实现来源 | 语义 |
 | --- | ---: | ---: | --- | --- |
-| `goal_progress` | `1.0` | `0.5` | `LeggedRobot` | 沿当前 goal 方向的速度跟踪 reward |
+| `goal_progress` | `1.0` | `0.0` | `LeggedRobot` | 沿当前 goal 方向的速度跟踪 reward；Stage2 关闭 |
 | `goal_delta_progress` | `2.0` | `3.0` | `LeggedRobot` | 到当前 waypoint 距离减少速度 reward |
 | `tracking_delta_yaw` | `1.0` | `1.0` | `LeggedRobot` | `delta_yaw` cosine 朝向 reward |
-| `delta_yaw_progress` | `0.5` | `0.5` | `LeggedRobot` | `abs(delta_yaw)` 下降 reward |
+| `delta_yaw_progress` | `0.0` | `0.0` | `LeggedRobot` | `abs(delta_yaw)` 下降 reward；Stage0/2 关闭 |
 | `goal_bonus` | `3.0` | `5.0` | `LeggedRobot` | waypoint/final goal 事件 reward |
 | `wheel_clearance` | `0.0` | `-0.8` | `Go2w override` | 障碍前方、非接触轮 clearance 不足 cost |
 | `wheel_climb_drive` | `0.0` | `0.0` | `Go2w override` | 目前保持关闭，不注册 |
@@ -42,23 +42,23 @@ Go2W stage profile 会在 `task_registry.py` 中通过 `--stage 0` / `--stage 2`
 | `wheel_slip` | `-0.1` | `-0.1` | `Go2w override` | 接触轮横向滑移 cost |
 | `base_height` | `-0.5` | `-0.2` | `Go2w override` | base 高度偏离目标 cost |
 | `orientation` | `-1.0` | `-0.5` | `LeggedRobot` | base roll/pitch 倾斜 cost |
-| `lin_vel_z` | `-2.0` | `-0.5` | `LeggedRobot` | base 垂直速度 cost |
+| `lin_vel_z` | `-2.0` | `0.0` | `LeggedRobot` | base 垂直速度 cost；Stage2 关闭 |
 | `ang_vel_xy` | `-0.05` | `-0.03` | `LeggedRobot` | base roll/pitch 角速度 cost |
 | `yaw_rate_l2` | `-0.01` | `-0.005` | `Go2w override` | 条件 yaw-rate cost，delta_yaw 大时放松 |
 | `torques` | `-1e-5` | `-1e-5` | `LeggedRobot` | torque L2 cost，轮子 torque 有权重 |
-| `dof_vel` | `-1e-4` | `-5e-5` | `Go2w override` | 腿部关节速度 cost，不惩罚轮子速度 |
-| `dof_acc` | `-2.5e-7` | `-1e-7` | `LeggedRobot` | 关节加速度 cost，轮子加速度有权重 |
+| `dof_vel` | `-5e-5` | `0.0` | `Go2w override` | 腿部关节速度 cost；Stage2 关闭 |
+| `dof_acc` | `0.0` | `0.0` | `LeggedRobot` | 关节加速度 cost；Stage0/2 关闭 |
 | `action_rate` | `-0.01` | `-0.005` | `LeggedRobot` | action 差分 cost，轮子 action rate 有权重 |
 | `dof_pos_limits` | `-0.9` | `-0.9` | `LeggedRobot` | 腿部关节越限 cost |
-| `hip_action_l2` | `-0.1` | `-0.02` | `Go2w override` | hip action L2 cost |
-| `stand_still` | `-0.01` | `-0.005` | `Go2w override` | 低速命令下腿部偏离默认姿态 cost |
+| `hip_action_l2` | `-0.05` | `0.0` | `Go2w override` | hip action L2 cost；Stage2 关闭 |
+| `stand_still` | `0.0` | `0.0` | `Go2w override` | 低速命令下腿部偏离默认姿态 cost；Stage0/2 关闭 |
 | `collision` | `-0.5` | `-0.5` | `LeggedRobot` | penalized body 接触 cost |
 | `termination` | `-0.8` | `-1.5` | `LeggedRobot` | failed reset terminal cost |
 
 运行时注册结果：
 
-- Stage0 非零注册项不包含 `wheel_clearance` 和 `wheel_climb_drive`。
-- Stage2 非零注册项包含 `wheel_clearance`，仍不包含 `wheel_climb_drive`。
+- Stage0 非零注册项不包含 `delta_yaw_progress`、`wheel_clearance`、`wheel_climb_drive`、`dof_acc`、`stand_still`。
+- Stage2 非零注册项包含 `wheel_clearance`，不包含 `goal_progress`、`delta_yaw_progress`、`lin_vel_z`、`dof_vel`、`dof_acc`、`hip_action_l2`、`stand_still`、`wheel_climb_drive`。
 - 负 scale 对应的函数均返回非负 cost；乘以负 scale 后变成惩罚。
 
 ## 3. Stage0 / Stage2 参数对照
@@ -89,7 +89,7 @@ Go2W stage profile 会在 `task_registry.py` 中通过 `--stage 0` / `--stage 2`
 | `goal_progress` | reward | `exp(-(vel_to_goal - target_speed)^2 / tracking_sigma)` |
 | `goal_delta_progress` | reward | `(prev_goal_dist - curr_goal_dist) / dt`，clip 到 `[0, goal_progress_delta_max]` |
 | `tracking_delta_yaw` | reward | `0.5 * (cos(commands[:,2]) + 1)` |
-| `delta_yaw_progress` | reward/cost 混合 | `prev_abs_delta_yaw - curr_abs_delta_yaw`，clip 到 `[-0.2, 0.2]` |
+| `delta_yaw_progress` | reward/cost 混合 | `prev_abs_delta_yaw - curr_abs_delta_yaw`，clip 到 `[-0.2, 0.2]`；Stage0/2 scale 为 0 |
 | `goal_bonus` | reward | 优先使用 `goal_reach_event` 和 `final_goal_event` |
 | `wheel_clearance` | cost | 只在 obstacle gate 且非接触轮上惩罚轮心低于目标高度 |
 | `wheel_spin_without_progress` | cost | moving command 下，`progress_vel < min_progress_speed` 时惩罚平均轮速平方 |
@@ -311,6 +311,7 @@ def _reward_termination(self):
 | Function | 当前状态 |
 | --- | --- |
 | `_reward_goal_progress_delta` | 旧距离差分路径，`use_delta_goal_progress=False`，Stage0/2 不注册 |
+| `_reward_delta_yaw_progress` | yaw error 下降 shaping，Stage0/2 scale 为 0 |
 | `_reward_tracking_goal_vel` | legacy alias，转发到 `goal_progress` |
 | `_reward_tracking_goal_vel_cmd_scaled` | legacy alias，转发到 `goal_progress` |
 | `_reward_tracking_goal_yaw` | legacy alias，转发到 `tracking_delta_yaw` |
@@ -323,6 +324,12 @@ def _reward_termination(self):
 | `_reward_early_success` | 旧 time shaping，Stage0/2 不注册 |
 | `_reward_time_penalty` | 旧 time penalty，Stage0/2 不注册 |
 | `_reward_wheel_climb_drive` | Go2W 实现仍存在，但 Stage0/2 scale 为 0 |
+| `_reward_goal_progress` | Stage0 使用；Stage2 scale 为 0，改由 `goal_delta_progress` 负责推进 |
+| `_reward_lin_vel_z` | Stage0 使用；Stage2 scale 为 0，避免抑制抬身/越障 |
+| `_reward_dof_vel` | Stage0 弱使用；Stage2 scale 为 0 |
+| `_reward_dof_acc` | Stage0/2 scale 为 0，保留 `action_rate` 作为主要平滑项 |
+| `_reward_hip_action_l2` | Stage0 弱使用；Stage2 scale 为 0 |
+| `_reward_stand_still` | Stage0/2 scale 为 0 |
 | `_reward_wheel_torque` | wheel torque cost，Stage0/2 不注册 |
 | `_reward_wheel_vel_smooth` | wheel acceleration smoothness，Stage0/2 不注册 |
 | `_reward_joint_power` | power cost，Stage0/2 不注册 |
@@ -340,17 +347,15 @@ def _reward_termination(self):
 
 ```text
 stage0 nonzero rewards:
-goal_progress, goal_delta_progress, tracking_delta_yaw, delta_yaw_progress,
-goal_bonus, wheel_spin_without_progress, wheel_slip, base_height, orientation,
-lin_vel_z, ang_vel_xy, yaw_rate_l2, torques, dof_vel, dof_acc, action_rate,
-dof_pos_limits, hip_action_l2, stand_still, collision, termination
+goal_progress, goal_delta_progress, tracking_delta_yaw, goal_bonus,
+wheel_spin_without_progress, wheel_slip, base_height, orientation, lin_vel_z,
+ang_vel_xy, yaw_rate_l2, torques, dof_vel, action_rate, dof_pos_limits,
+hip_action_l2, collision, termination
 
 stage2 nonzero rewards:
-goal_progress, goal_delta_progress, tracking_delta_yaw, delta_yaw_progress,
-goal_bonus, wheel_clearance, wheel_spin_without_progress, wheel_slip,
-base_height, orientation, lin_vel_z, ang_vel_xy, yaw_rate_l2, torques,
-dof_vel, dof_acc, action_rate, dof_pos_limits, hip_action_l2, stand_still,
-collision, termination
+goal_delta_progress, tracking_delta_yaw, goal_bonus, wheel_clearance,
+wheel_spin_without_progress, wheel_slip, base_height, orientation, ang_vel_xy,
+yaw_rate_l2, torques, action_rate, dof_pos_limits, collision, termination
 
 missing reward methods:
 []
