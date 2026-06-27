@@ -12,43 +12,74 @@ from .go2w_config import GO2WRoughCfg
 class Go2w(LeggedRobot):
     cfg: GO2WRoughCfg
 
+    def _indices_from_names(self, all_names, names, label):
+        missing = [name for name in names if name not in all_names]
+        if missing:
+            raise RuntimeError(f'Missing {label} names {missing}. Available names: {all_names}')
+        return torch.tensor([all_names.index(name) for name in names], dtype=torch.long, device=self.device)
+
+    def _matching_names(self, all_names, patterns):
+        matched = []
+        for pattern in patterns:
+            matched.extend([name for name in all_names if pattern in name])
+        return matched
+
     def _create_envs(self):
         super()._create_envs()
-        wheel_names = []
-        for name in self.cfg.asset.wheel_name:
-            wheel_names.extend([dof_name for dof_name in self.dof_names if name in dof_name])
+        wheel_names = list(getattr(self.cfg.asset, 'wheel_dof_names', []) or [])
         if not wheel_names:
-            raise RuntimeError(f'No wheel joints matched {self.cfg.asset.wheel_name} in DOFs: {self.dof_names}')
+            wheel_patterns = getattr(self.cfg.asset, 'wheel_name', ['foot_joint'])
+            wheel_names = self._matching_names(self.dof_names, wheel_patterns)
+        if not wheel_names:
+            raise RuntimeError(f'No wheel joints matched {getattr(self.cfg.asset, "wheel_name", [])} in DOFs: {self.dof_names}')
         self.wheel_dof_names = wheel_names
-        self.wheel_indices = torch.zeros(len(wheel_names), dtype=torch.long, device=self.device, requires_grad=False)
-        for i, name in enumerate(wheel_names):
-            self.wheel_indices[i] = self.gym.find_actor_dof_handle(self.envs[0], self.actor_handles[0], name)
+        self.wheel_indices = self._indices_from_names(self.dof_names, wheel_names, 'wheel DOF')
         self.wheel_dof_indices = self.wheel_indices
-        self.wheel_forward_sign = torch.ones(len(self.wheel_dof_indices), dtype=torch.float, device=self.device, requires_grad=False)
+        wheel_forward_sign = getattr(self.cfg.asset, 'wheel_forward_sign', None)
+        if wheel_forward_sign is None:
+            self.wheel_forward_sign = torch.ones(len(self.wheel_dof_indices), dtype=torch.float, device=self.device, requires_grad=False)
+        else:
+            self.wheel_forward_sign = torch.tensor(wheel_forward_sign, dtype=torch.float, device=self.device, requires_grad=False)
+            if self.wheel_forward_sign.numel() != len(self.wheel_dof_indices):
+                raise RuntimeError(
+                    f'wheel_forward_sign length {self.wheel_forward_sign.numel()} '
+                    f'does not match wheel DOF count {len(self.wheel_dof_indices)}'
+                )
 
         wheel_dof_set = set(int(idx) for idx in self.wheel_dof_indices.detach().cpu().tolist())
-        self.leg_dof_names = [name for i, name in enumerate(self.dof_names) if i not in wheel_dof_set]
-        self.leg_dof_indices = torch.tensor(
-            [i for i in range(len(self.dof_names)) if i not in wheel_dof_set],
-            dtype=torch.long,
-            device=self.device,
-        )
+        self.leg_dof_names = list(getattr(self.cfg.asset, 'leg_dof_names', []) or [])
+        if self.leg_dof_names:
+            self.leg_dof_indices = self._indices_from_names(self.dof_names, self.leg_dof_names, 'leg DOF')
+        else:
+            self.leg_dof_names = [name for i, name in enumerate(self.dof_names) if i not in wheel_dof_set]
+            self.leg_dof_indices = torch.tensor(
+                [i for i in range(len(self.dof_names)) if i not in wheel_dof_set],
+                dtype=torch.long,
+                device=self.device,
+            )
         if self.leg_dof_indices.numel() == 0:
             raise RuntimeError(f'No leg joints remain after wheel DOF split. DOFs: {self.dof_names}, wheels: {wheel_names}')
 
         rigid_body_names = self.gym.get_actor_rigid_body_names(self.envs[0], self.actor_handles[0])
         self.body_names = rigid_body_names
-        wheel_body_names = []
-        for name in getattr(self.cfg.asset, 'wheel_body_name', self.cfg.asset.foot_name if isinstance(self.cfg.asset.foot_name, list) else [self.cfg.asset.foot_name]):
-            wheel_body_names.extend([body_name for body_name in rigid_body_names if name in body_name])
+        wheel_body_names = list(getattr(self.cfg.asset, 'wheel_body_names', []) or [])
+        if not wheel_body_names:
+            wheel_body_patterns = getattr(
+                self.cfg.asset,
+                'wheel_body_name',
+                self.cfg.asset.foot_name if isinstance(self.cfg.asset.foot_name, list) else [self.cfg.asset.foot_name],
+            )
+            wheel_body_names = self._matching_names(rigid_body_names, wheel_body_patterns)
         if not wheel_body_names:
             wheel_body_names = [body_name for body_name in rigid_body_names if self.cfg.asset.foot_name in body_name]
         if not wheel_body_names:
             raise RuntimeError(f'No wheel bodies matched {self.cfg.asset.foot_name} in bodies: {rigid_body_names}')
         self.wheel_body_names = wheel_body_names
-        self.wheel_body_indices = torch.zeros(len(wheel_body_names), dtype=torch.long, device=self.device, requires_grad=False)
-        for i, name in enumerate(wheel_body_names):
-            self.wheel_body_indices[i] = self.gym.find_actor_rigid_body_handle(self.envs[0], self.actor_handles[0], name)
+        self.wheel_body_indices = torch.tensor(
+            [self.gym.find_actor_rigid_body_handle(self.envs[0], self.actor_handles[0], name) for name in wheel_body_names],
+            dtype=torch.long,
+            device=self.device,
+        )
 
         wheel_body_set = set(int(idx) for idx in self.wheel_body_indices.detach().cpu().tolist())
         leg_foot_names = [
@@ -280,13 +311,9 @@ class Go2w(LeggedRobot):
         wheel_vel = self.dof_vel[:, self.wheel_dof_indices]
         wheel_forward_sign = getattr(self, 'wheel_forward_sign', torch.ones(len(self.wheel_dof_indices), dtype=torch.float, device=self.device))
         positive_wheel_spin = torch.clamp(wheel_vel * wheel_forward_sign.unsqueeze(0), min=0.0)
-        env_ids = torch.arange(self.num_envs, device=self.device)
-        cur_goal = self.env_goals[env_ids, self.cur_goal_idx] if hasattr(self, 'env_goals') and hasattr(self, 'cur_goal_idx') else self.root_states[:, :3]
-        target_vec = cur_goal[:, :2] - self.root_states[:, :2]
-        target_dir = target_vec / (torch.norm(target_vec, dim=1, keepdim=True) + 1e-6)
-        progress_vel = torch.clamp(torch.sum(target_dir * self.root_states[:, 7:9], dim=1), min=0.0).unsqueeze(1)
-        cmd_speed = torch.norm(self.commands[:, :2], dim=1)
-        moving_cmd = (cmd_speed > float(getattr(self.cfg.rewards, 'stop_cmd_threshold', 0.05))).float().unsqueeze(1)
+        _, progress_vel, _, moving_cmd = self._get_goal_progress_state()
+        progress_vel = torch.clamp(progress_vel, min=0.0).unsqueeze(1)
+        moving_cmd = moving_cmd.float().unsqueeze(1)
         wheel_contact = self.contact_forces[:, self.wheel_body_indices, 2] > 1.0
 
         reward = torch.sum(positive_wheel_spin * progress_vel * moving_cmd * wheel_contact.float(), dim=1)
@@ -298,7 +325,9 @@ class Go2w(LeggedRobot):
             return torch.zeros(self.num_envs, dtype=torch.float, device=self.device)
 
         wheel_speed = torch.abs(self.dof_vel[:, self.wheel_dof_indices])
-        low_progress = torch.abs(self.base_lin_vel[:, 0]) < 0.05
-        reward = torch.sum(wheel_speed, dim=1) * low_progress.float()
+        _, progress_vel, _, moving_cmd = self._get_goal_progress_state()
+        threshold = float(getattr(self.cfg.rewards, 'wheel_spin_progress_threshold', 0.05))
+        low_progress = progress_vel < threshold
+        reward = torch.mean(wheel_speed, dim=1) * low_progress.float() * moving_cmd.float()
         reward *= self._get_obstacle_ahead_mask().float()
         return self._mask_invalid_terrain_reward(reward)

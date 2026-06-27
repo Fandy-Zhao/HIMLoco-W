@@ -90,14 +90,11 @@ class TaskRegistry():
             r("feet_", "contact_", "forces"),
         ]
 
-    GO2W_CORE_REWARD_NAMES = [
+    GO2W_ACTIVE_REWARD_NAMES = [
         "goal_progress",
         "goal_progress_delta",
         "tracking_delta_yaw",
         "goal_bonus",
-        "success_bonus",
-        "early_success",
-        "time_penalty",
         "wheel_clearance",
         "wheel_climb_drive",
         "wheel_spin_without_progress",
@@ -118,12 +115,20 @@ class TaskRegistry():
         "termination",
     ]
 
+    @property
+    def GO2W_LEGACY_REWARD_NAMES(self):
+        return self.LEGACY_GO2W_REWARD_SCALES + [
+            "success_bonus",
+            "early_success",
+            "time_penalty",
+        ]
+
     def remove_reward_scale(self, scales, name):
         if name in vars(scales):
             delattr(scales, name)
 
     def remove_legacy_go2w_reward_scales(self, env_cfg):
-        for name in self.LEGACY_GO2W_REWARD_SCALES:
+        for name in self.GO2W_LEGACY_REWARD_NAMES:
             self.remove_reward_scale(env_cfg.rewards.scales, name)
         # go2W scales inherit many base rewards through class inheritance.
         # Replace the scale container so class_to_dict()/TensorBoard only see
@@ -131,132 +136,240 @@ class TaskRegistry():
         env_cfg.rewards.scales = type("Go2WCoreRewardScales", (), {})
         return env_cfg
 
-    def apply_go2w_stage0_scales(self, env_cfg):
-        env_cfg = self.remove_legacy_go2w_reward_scales(env_cfg)
-        scales = env_cfg.rewards.scales
+    TERRAIN_PROFILES = {
+        0: {'parkour_flat': 1.0},
+        1: {'parkour_hurdle': 2.0, 'parkour_flat': 1.5, 'parkour_step': 1.0, 'parkour_gap': 1.0},
+        2: {
+            'parkour_hurdle': 0.2,
+            'parkour_flat': 0.2,
+            'parkour_step': 0.0,
+            'parkour_gap': 0.0,
+            'parkour_wall': 0.4,
+            'T_step_stl': 0.4,
+            'Slope': 0.4,
+            'BridgeA': 0.4,
+            'BridgeB': 0.0,
+        },
+        4: {'parkour_flat': 1.0},
+    }
 
-        scales.goal_progress = 2.0
-        scales.tracking_delta_yaw = 0.5
-        scales.goal_bonus = 0.0
+    TRAIN_ITERATIONS = {0: 7000, 1: 15000, 2: 10000, 4: 15000}
 
-        scales.base_height = -0.5
-        scales.orientation = -1.0
-        scales.lin_vel_z = -2.0
-        scales.ang_vel_xy = -0.05
-        scales.yaw_rate_l2 = -0.01
+    GO2W_STAGE_PROFILES = {
+        0: ("stage0", "stage0"),
+        1: ("stage1", "stage1"),
+        2: ("stage2", "stage2"),
+        4: ("stage4", "stage4"),
+    }
 
-        scales.torques = -1e-5
-        scales.dof_vel = -1e-4
-        scales.dof_acc = -2.5e-7
-        scales.action_rate = -0.01
-        scales.dof_pos_limits = -0.9
-        scales.hip_action_l2 = -0.1
+    GO2W_REWARD_PROFILES = {
+        "stage0": {
+            "scales": {
+                "goal_progress": 2.0,  # 基础速度跟踪：奖励沿当前目标方向达到命令速度。
+                "goal_progress_delta": 0.0,  # 关闭距离差分推进；stage0 不要求按路点持续推进。
+                "tracking_delta_yaw": 0.5,  # 弱朝向对齐：鼓励机身朝向当前目标方向。
+                "goal_bonus": 0.0,  # 关闭到点事件奖励，避免平地基础阶段刷 waypoint bonus。
+                "wheel_clearance": 0.0,  # 关闭轮子抬高奖励；stage0 不训练越障动作。
+                "wheel_climb_drive": 0.0,  # 关闭障碍附近轮子驱动奖励；stage0 只学基础行驶。
+                "wheel_spin_without_progress": 0.0,  # 关闭空转惩罚；基础阶段先避免过多轮足约束。
+                "wheel_slip": -0.1,  # 轻惩罚轮子横向滑移，减少侧滑但不过度限制探索。
+                "base_height": -0.5,  # 惩罚基座高度偏离目标高度，保持基础站姿。
+                "orientation": -1.0,  # 惩罚 roll/pitch 倾斜，平地阶段保持身体稳定。
+                "lin_vel_z": -2.0,  # 惩罚垂直速度，抑制跳动和弹跳。
+                "ang_vel_xy": -0.05,  # 惩罚 roll/pitch 角速度，减少身体晃动。
+                "yaw_rate_l2": -0.01,  # 轻惩罚 yaw 角速度，避免无意义快速自旋。
+                "torques": -1e-5,  # 轻能耗惩罚，限制关节/轮子力矩过大。
+                "dof_vel": -1e-4,  # 惩罚腿部关节速度，提升动作平滑性。
+                "dof_acc": -2.5e-7,  # 惩罚关节加速度，降低抖动。
+                "action_rate": -0.01,  # 惩罚连续 action 差分，减少控制突变。
+                "dof_pos_limits": -0.9,  # 惩罚腿部关节接近限位，保护可行姿态空间。
+                "hip_action_l2": -0.1,  # 抑制髋关节大幅动作，减少外摆和不稳定姿态。
+                "stand_still": -0.01,  # 零/低速命令下惩罚腿部偏离默认姿态。
+                "collision": -0.5,  # 惩罚非允许部位接触，减少躯干/腿部碰撞。
+                "termination": -0.8,  # 失败终止惩罚，区分正常超时和跌倒/碰撞终止。
+            },
+            "params": {
+                "reward_align_stage2": False,  # 不计算 stage2 专用的路点距离差分缓存。
+                "use_delta_goal_progress": False,  # `_reward_goal_progress_delta` 即使存在也返回 0。
+                "min_goal_speed": 0.0,  # 允许低速/静止命令，适合基础跟踪预训练。
+                "max_goal_speed": 2.0,  # 限制 reward 中目标速度上界，低于命令采样最大值以稳定早期训练。
+                "stop_cmd_threshold": 0.05,  # 命令速度低于该值时按停止目标处理。
+                "final_goal_bonus": 0.0,  # 关闭最终路点额外奖励。
+                "obstacle_height_offset": 0.0,  # 不因前方障碍提高基座高度目标。
+                "obstacle_height_threshold": 0.04,  # 前方高度升高超过该值才算障碍；stage0 仅保留默认阈值。
+                "gap_height_threshold": 0.06,  # 前方高度下降超过该值才算 gap；stage0 不启用相关奖励。
+                "wheel_clearance_target": 0.08,  # 轮子离地目标高度；stage0 scale 为 0，仅保留默认值。
+                "only_positive_rewards": True,  # 裁剪总 reward 到非负，降低基础阶段早期崩溃风险。
+            },
+        },
+        "stage1": {
+            "inherits": "stage0",
+            "scales": {
+                "wheel_slip": -0.15,
+            },
+        },
+        "stage2": {
+            "scales": {
+                "goal_progress": 0.5,  # 辅助速度约束：保持朝目标速度合理，不作为主推进信号。
+                "goal_progress_delta": 8.0,  # 主推进奖励：按当前步到目标距离减少量给奖。
+                "tracking_delta_yaw": 0.8,  # 强化朝向目标，帮助复杂地形上对准障碍入口。
+                "goal_bonus": 2.0,  # 一次性路点到达奖励，配合 final_goal_bonus 奖励完成整段路线。
+                "wheel_clearance": 1.0,  # 障碍附近奖励轮子达到目标离地高度，辅助跨越台阶/墙/gap。
+                "wheel_climb_drive": 0.1,  # 障碍附近奖励接触轮正向驱动且产生目标方向进展。
+                "wheel_spin_without_progress": -0.02,  # 障碍附近惩罚轮子高速转但目标方向进展不足。
+                "wheel_slip": -0.3,  # 强惩罚轮子横向滑移，提升复杂地形牵引稳定性。
+                "base_height": -0.25,  # 弱化基座高度惩罚，允许越障时抬高或压低身体。
+                "orientation": -0.2,  # 弱化姿态惩罚，避免越障动作被过度压制。
+                "lin_vel_z": -0.8,  # 保留垂直速度惩罚，但比 stage0 弱以允许上台阶/落地。
+                "ang_vel_xy": -0.03,  # 轻惩罚 roll/pitch 角速度，允许必要的身体摆动。
+                "yaw_rate_l2": -0.02,  # 惩罚无效快速转向，避免在障碍前抖动自旋。
+                "torques": -1e-5,  # 保持能耗正则，防止靠极端力矩过障。
+                "dof_vel": -5e-5,  # 比 stage0 更弱的腿部速度惩罚，给越障动作留自由度。
+                "dof_acc": -1e-7,  # 比 stage0 更弱的加速度惩罚，减少对快速调整的限制。
+                "action_rate": -0.005,  # 比 stage0 更弱的 action 平滑惩罚，允许越障时快速修正。
+                "dof_pos_limits": -0.5,  # 保留限位保护，但弱于 stage0 以允许大幅姿态变化。
+                "hip_action_l2": -0.05,  # 轻惩罚髋关节大动作，避免越障时过度外摆。
+                "stand_still": 0.0,  # 关闭低速站立惩罚，避免与持续路点推进目标冲突。
+                "collision": -0.3,  # 碰撞惩罚弱于 stage0，避免越障探索被过早压死。
+                "termination": -0.8,  # 失败终止惩罚保持不变。
+            },
+            "params": {
+                "reward_align_stage2": True,  # 启用路点距离差分和一次性完成事件缓存。
+                "use_delta_goal_progress": True,  # 允许 `_reward_goal_progress_delta` 输出正向距离进展。
+                "goal_progress_delta_max": 1.0,  # 限制单步距离差分上界，防止 reset/瞬移造成异常大奖励。
+                "min_goal_speed": 0.15,  # 移动命令下 reward 目标速度下限，避免慢挪刷进展。
+                "max_goal_speed": 4.0,  # reward 目标速度上限，与连续速度课程目标一致。
+                "stop_cmd_threshold": 0.05,  # 命令速度低于该值时视为停止，轮子驱动/空转项也按停止处理。
+                "final_goal_bonus": 5.0,  # 到达最终路点时在 goal_bonus 基础上追加的一次性奖励。
+                "obstacle_height_offset": 0.06,  # 前方检测到障碍时提高基座高度目标，辅助上障碍。
+                "obstacle_height_threshold": 0.04,  # 前方高度升高超过该值判定为 step/wall 类障碍。
+                "gap_height_threshold": 0.06,  # 前方高度下降超过该值判定为 gap 类障碍。
+                "wheel_clearance_target": 0.10,  # stage2 轮子越障离地目标高度，高于基础阶段默认值。
+                "only_positive_rewards": False,  # 保留负奖励，确保滑移/碰撞/空转等约束真实生效。
+            },
+        },
+        "stage4": {
+            "inherits": "stage2",
+            "scales": {
+                "goal_progress": 2.0,
+                "goal_progress_delta": 0.0,
+                "tracking_delta_yaw": 0.8,
+                "goal_bonus": 1.5,
+                "stand_still": -0.01,
+                "wheel_clearance": 0.0,
+                "wheel_climb_drive": 0.0,
+                "wheel_spin_without_progress": 0.0,
+            },
+            "params": {
+                "reward_align_stage2": False,
+                "use_delta_goal_progress": False,
+                "tracking_sigma": 0.05,
+                "min_goal_speed": 0.0,
+                "max_goal_speed": 0.8,
+                "obstacle_height_offset": 0.0,
+                "wheel_clearance_target": 0.08,
+            },
+        },
+    }
 
-        scales.wheel_slip = -0.1
-        scales.stand_still = -0.01
-        scales.collision = -0.5
-        scales.termination = -0.8
+    GO2W_SPEED_PROFILES = {
+        "stage0": {
+            "lin_vel_x": [0.0, 3.0],  # 命令采样前进速度范围；reward 侧再用 max_goal_speed 限制目标速度。
+            "lin_vel_y": [0.0, 0.0],  # 关闭横向速度命令，训练轮足机器人主要前向行驶。
+            "use_continuous_speed_curriculum": False,  # 基础阶段不启用速度课程，直接覆盖完整采样范围。
+        },
+        "stage1": {
+            "lin_vel_x": [0.0, 3.0],
+            "lin_vel_y": [0.0, 0.0],
+            "use_continuous_speed_curriculum": False,
+        },
+        "stage2": {
+            "lin_vel_x": [0.0, 3.0],  # 初始命令采样范围；实际上界会被连续速度课程动态覆盖。
+            "lin_vel_y": [0.0, 0.0],  # 复杂地形仍关闭横向速度命令，避免目标推进语义混乱。
+            "use_continuous_speed_curriculum": True,  # 根据训练表现逐步提高命令速度上限。
+            "curriculum_start_speed": 2.0,  # 速度课程起点；训练初期 command_ranges['lin_vel_x'][1] 被设为该值。
+            "curriculum_goal_speed": 4.0,  # 速度课程最终目标上限。
+            "curriculum_target_speed": 4.0,  # 兼容旧字段；与 curriculum_goal_speed 保持一致。
+            "curriculum_min_ratio": 0.0,  # 速度课程比例下限。
+            "curriculum_max_ratio": 1.0,  # 速度课程比例上限。
+            "curriculum_success_high": 0.75,  # success 指标模式下的提速阈值；当前 progress 模式不使用。
+            "curriculum_success_low": 0.35,  # success 指标模式下的降速阈值；当前 progress 模式不使用。
+            "curriculum_update_interval": 100,  # 每隔多少 policy step 更新一次速度课程。
+            "curriculum_increase_step": 0.03,  # 达到提速条件时课程比例增加量。
+            "curriculum_decrease_step": 0.01,  # 允许回退时课程比例下降量。
+            "curriculum_hold_on_drop": True,  # 指标变差时保持当前速度，不主动降速。
+            "curriculum_metric": "progress",  # 使用距离进展/中间路点达成率驱动速度课程，而不是最终成功率。
+            "curriculum_progress_high": 0.045,  # 平均正向距离进展超过该值时提速。
+            "curriculum_progress_low": 0.015,  # 平均正向距离进展低于该值时可触发降速逻辑。
+            "curriculum_intermediate_goal_high": 0.25,  # 中间路点达成率超过该值也允许提速。
+        },
+        "stage4": {
+            "lin_vel_x": [0.0, 0.8],
+            "lin_vel_y": [0.0, 0.0],
+            "use_continuous_speed_curriculum": False,
+        },
+    }
 
-        scales.wheel_clearance = 0.0
-        scales.wheel_climb_drive = 0.0
-        scales.wheel_spin_without_progress = 0.0
+    def _resolve_profile(self, profiles, name):
+        profile = dict(profiles[name])
+        parent_name = profile.pop("inherits", None)
+        if parent_name is None:
+            return profile
+        parent = self._resolve_profile(profiles, parent_name)
+        for key, value in profile.items():
+            if isinstance(value, dict) and isinstance(parent.get(key), dict):
+                merged = dict(parent[key])
+                merged.update(value)
+                parent[key] = merged
+            else:
+                parent[key] = value
+        return parent
 
-        env_cfg.rewards.min_goal_speed = 0.0
-        env_cfg.rewards.max_goal_speed = 2.0
-        env_cfg.rewards.stop_cmd_threshold = 0.05
-        env_cfg.rewards.final_goal_bonus = 0.0
-        env_cfg.rewards.obstacle_height_offset = 0.0
-        env_cfg.rewards.obstacle_height_threshold = 0.04
-        env_cfg.rewards.gap_height_threshold = 0.06
-        env_cfg.rewards.wheel_clearance_target = 0.08
-        env_cfg.asset.penalize_contacts_on = ["base", "trunk", "thigh", "calf"]
-        env_cfg.asset.terminate_after_contacts_on = ["base", "trunk"]
-        env_cfg.commands.ranges.lin_vel_y = [0.0, 0.0]
-        env_cfg.commands.ranges.lin_vel_x = [0.0, 2.0]
+    def apply_terrain_profile(self, env_cfg, stage):
+        env_cfg.terrain.terrain_proportions = [0.] * 8
+        extra_props = dict(getattr(env_cfg.terrain, 'terrain_extra_proportions', {}) or {})
+        for name in extra_props:
+            extra_props[name] = 0.
+        for name, value in self.TERRAIN_PROFILES[stage].items():
+            if name not in extra_props:
+                raise KeyError(f"Stage {stage} terrain '{name}' is not defined in terrain_extra_proportions")
+            extra_props[name] = value
+        env_cfg.terrain.terrain_extra_proportions = extra_props
         return env_cfg
 
-    def apply_go2w_stage2_scales(self, env_cfg):
+    def apply_go2w_reward_profile(self, env_cfg, profile_name):
         env_cfg = self.remove_legacy_go2w_reward_scales(env_cfg)
         scales = env_cfg.rewards.scales
-
-        # Stage2 alignment objective: reaching the final goal early should
-        # return more than simply surviving for a full episode. Legacy
-        # goal_progress is kept but reduced; delta progress and one-shot
-        # terminal success terms are controlled by cfg switches below.
-        scales.goal_progress = 1.0
-        scales.goal_progress_delta = 8.0
-        scales.tracking_delta_yaw = 0.8
-        scales.goal_bonus = 0.5
-        scales.success_bonus = 12.0
-        scales.early_success = 6.0
-        scales.time_penalty = -0.05
-
-        scales.wheel_clearance = 1.0
-        scales.wheel_climb_drive = 0.1
-        scales.wheel_spin_without_progress = -0.02
-
-        scales.base_height = -0.25
-        scales.orientation = -0.2
-        scales.lin_vel_z = -0.8
-        scales.ang_vel_xy = -0.03
-        scales.yaw_rate_l2 = -0.02
-
-        scales.torques = -1e-5
-        scales.dof_vel = -5e-5
-        scales.dof_acc = -1e-7
-        scales.action_rate = -0.005
-        scales.dof_pos_limits = -0.5
-        scales.hip_action_l2 = -0.05
-
-        scales.wheel_slip = -0.3 * float(getattr(env_cfg.rewards, 'wheel_slip_scale_multiplier', 1.0))
-        scales.stand_still = -0.01
-        scales.collision = -0.3
-        scales.termination = -0.8
-
-        env_cfg.rewards.reward_align_stage2 = True
-        env_cfg.rewards.use_delta_goal_progress = True
-        env_cfg.rewards.success_bonus_once = True
-        env_cfg.rewards.use_time_penalty = True
-        env_cfg.rewards.reduce_alive_reward_stage2 = True
-        env_cfg.rewards.log_reward_terms_detail = True
-        env_cfg.rewards.goal_progress_delta_max = 1.0
-        env_cfg.rewards.wheel_slip_scale_multiplier = 1.0
-        env_cfg.rewards.min_goal_speed = 0.15
-        env_cfg.rewards.max_goal_speed = 4.0
-        env_cfg.rewards.stop_cmd_threshold = 0.05
-        env_cfg.rewards.final_goal_bonus = 5.0
-        env_cfg.rewards.obstacle_height_offset = 0.06
-        env_cfg.rewards.obstacle_height_threshold = 0.04
-        env_cfg.rewards.gap_height_threshold = 0.06
-        env_cfg.rewards.wheel_clearance_target = 0.10
-        env_cfg.rewards.only_positive_rewards = False
+        profile = self._resolve_profile(self.GO2W_REWARD_PROFILES, profile_name)
+        for name, value in profile.get("scales", {}).items():
+            setattr(scales, name, value)
+        for name, value in profile.get("params", {}).items():
+            setattr(env_cfg.rewards, name, value)
         env_cfg.asset.penalize_contacts_on = ["base", "trunk", "thigh", "calf"]
         env_cfg.asset.terminate_after_contacts_on = ["base", "trunk"]
-        env_cfg.commands.ranges.lin_vel_y = [0.0, 0.0]
-        env_cfg.commands.use_continuous_speed_curriculum = True
-        env_cfg.commands.curriculum_start_speed = 2.0
-        env_cfg.commands.curriculum_goal_speed = 4.0
-        env_cfg.commands.curriculum_target_speed = 4.0
-        env_cfg.commands.curriculum_min_ratio = 0.0
-        env_cfg.commands.curriculum_max_ratio = 1.0
-        env_cfg.commands.curriculum_success_high = 0.75
-        env_cfg.commands.curriculum_success_low = 0.35
-        env_cfg.commands.curriculum_update_interval = 100
-        env_cfg.commands.curriculum_increase_step = 0.03
-        env_cfg.commands.curriculum_decrease_step = 0.01
-        env_cfg.commands.curriculum_hold_on_drop = True
-        env_cfg.commands.curriculum_metric = 'progress'
-        env_cfg.commands.curriculum_progress_high = 0.045
-        env_cfg.commands.curriculum_progress_low = 0.015
-        env_cfg.commands.curriculum_intermediate_goal_high = 0.25
-
-        print("[go2w stage2 core reward scales]")
-        for name in self.GO2W_CORE_REWARD_NAMES:
+        print(f"[go2w {profile_name} active reward scales]")
+        for name in self.GO2W_ACTIVE_REWARD_NAMES:
             if hasattr(scales, name):
                 print(f"  {name}: {getattr(scales, name)}")
         print(f"  penalize_contacts_on: {env_cfg.asset.penalize_contacts_on}")
         print(f"  terminate_after_contacts_on: {env_cfg.asset.terminate_after_contacts_on}")
         return env_cfg
+
+    def apply_go2w_speed_profile(self, env_cfg, profile_name):
+        profile = self.GO2W_SPEED_PROFILES[profile_name]
+        env_cfg.commands.ranges.lin_vel_x = list(profile["lin_vel_x"])
+        env_cfg.commands.ranges.lin_vel_y = list(profile["lin_vel_y"])
+        for name, value in profile.items():
+            if name in ("lin_vel_x", "lin_vel_y"):
+                continue
+            setattr(env_cfg.commands, name, value)
+        return env_cfg
+
+    def apply_go2w_stage0_scales(self, env_cfg):
+        return self.apply_go2w_reward_profile(env_cfg, "stage0")
+
+    def apply_go2w_stage2_scales(self, env_cfg):
+        return self.apply_go2w_reward_profile(env_cfg, "stage2")
     
     def make_env(self, name, args=None, env_cfg=None) -> Tuple[VecEnv, Any]:
         """ Creates an environment either from a registered namme or from the provided config file.
@@ -313,50 +426,22 @@ class TaskRegistry():
                 "which has not been migrated to HIMLoco-W."
             )
 
-        terrain_stage_props = {
-            0: {'parkour_flat': 1.0},
-            1: {'parkour_hurdle': 2.0, 'parkour_flat': 1.5, 'parkour_step': 1.0, 'parkour_gap': 1.0},
-            2: {
-                'parkour_hurdle': 0.2, 'parkour_flat': 0.2, 'parkour_step': 0., 'parkour_gap': 0., 'parkour_wall': 0.4,
-                'T_step_stl': 0.4, 'Slope': 0.4, 'BridgeA': 0.4, 'BridgeB': 0.,
-            },
-            4: {'parkour_flat': 1.0},
-        }
-        train_iterations = {0: 7000, 1: 15000, 2: 10000, 4: 15000}
-        if stage not in terrain_stage_props:
+        if stage not in self.TERRAIN_PROFILES:
             raise ValueError(f"Unsupported parkour stage {stage}. Supported HIM-compatible stages are 0, 1, 2, and 4.")
 
         if env_cfg is not None:
             print("Set env learning stage to {}".format(stage))
-            env_cfg.terrain.terrain_proportions = [0.] * 8
-            extra_props = dict(getattr(env_cfg.terrain, 'terrain_extra_proportions', {}) or {})
-            for name in extra_props:
-                extra_props[name] = 0.
-            for name, value in terrain_stage_props[stage].items():
-                if name not in extra_props:
-                    raise KeyError(f"Stage {stage} terrain '{name}' is not defined in terrain_extra_proportions")
-                extra_props[name] = value
-            env_cfg.terrain.terrain_extra_proportions = extra_props
+            env_cfg = self.apply_terrain_profile(env_cfg, stage)
 
-            if stage == 0 and getattr(env_cfg.asset, 'name', '') == 'go2w':
-                env_cfg = self.apply_go2w_stage0_scales(env_cfg)
-                env_cfg.commands.ranges.lin_vel_x = [0.0, 3.0]
-            elif stage == 2 and getattr(env_cfg.asset, 'name', '') == 'go2w':
-                env_cfg = self.apply_go2w_stage2_scales(env_cfg)
-                env_cfg.commands.ranges.lin_vel_x = [0.0, 3.0]
-            elif stage == 4 and getattr(env_cfg.asset, 'name', '') == 'go2w':
-                env_cfg = self.apply_go2w_stage2_scales(env_cfg)
-                env_cfg.rewards.scales.goal_progress = 2.0
-                env_cfg.rewards.scales.tracking_delta_yaw = 0.8
-                env_cfg.rewards.scales.goal_bonus = 1.5
-                env_cfg.rewards.tracking_sigma = 0.05
-                env_cfg.commands.ranges.lin_vel_x = [0.0, 0.8]
-            
+            if getattr(env_cfg.asset, 'name', '') == 'go2w':
+                reward_profile, speed_profile = self.GO2W_STAGE_PROFILES[stage]
+                env_cfg = self.apply_go2w_reward_profile(env_cfg, reward_profile)
+                env_cfg = self.apply_go2w_speed_profile(env_cfg, speed_profile)
 
         if train_cfg is not None:
             print("Set train learning stage to {}".format(stage))
             if getattr(args, "max_iterations", None) is None:
-                train_cfg.runner.max_iterations = train_iterations[stage]
+                train_cfg.runner.max_iterations = self.TRAIN_ITERATIONS[stage]
 
         return env_cfg, train_cfg
 

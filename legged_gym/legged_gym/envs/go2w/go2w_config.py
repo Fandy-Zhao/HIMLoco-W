@@ -115,6 +115,20 @@ class GO2WRoughCfg(LeggedRobotCfg):
         name = 'go2w'
         foot_name = 'foot'
         wheel_name = ['foot_joint']
+        wheel_radius = 0.05
+        leg_dof_names = [
+            'FL_hip_joint', 'FL_thigh_joint', 'FL_calf_joint',
+            'FR_hip_joint', 'FR_thigh_joint', 'FR_calf_joint',
+            'RL_hip_joint', 'RL_thigh_joint', 'RL_calf_joint',
+            'RR_hip_joint', 'RR_thigh_joint', 'RR_calf_joint',
+        ]
+        wheel_dof_names = [
+            'FL_foot_joint', 'FR_foot_joint', 'RL_foot_joint', 'RR_foot_joint',
+        ]
+        wheel_body_names = [
+            'FL_foot', 'FR_foot', 'RL_foot', 'RR_foot',
+        ]
+        wheel_forward_sign = [1.0, 1.0, 1.0, 1.0]
         penalize_contacts_on = ['thigh', 'calf', 'base']
         terminate_after_contacts_on = []
         self_collisions = 0
@@ -153,17 +167,21 @@ class GO2WRoughCfg(LeggedRobotCfg):
         wheel_action_rate_weight = 0.5
         wheel_clearance_target = 0.10
         obstacle_height_offset = 0.06
-        heading_sigma = 0.25
-        delta_yaw_sigma = 0.25
+        wheel_spin_progress_threshold = 0.05
         min_goal_speed = 0.2
         max_goal_speed = 0.8
         stop_cmd_threshold = 0.05
         final_goal_bonus = 5.0
-        use_fixed_goal_speed = False
-        fixed_goal_speed = 0.4
         obstacle_height_threshold = 0.06
         gap_height_threshold = 0.06
         obstacle_probe_distances = [0.25, 0.40, 0.55, 0.70]
+        
+        
+        # Legacy/diagnostic fields kept for metadata compatibility; active profiles do not use them.
+        heading_sigma = 0.25
+        delta_yaw_sigma = 0.25
+        use_fixed_goal_speed = False
+        fixed_goal_speed = 0.4
         reward_align_stage2 = False
         use_delta_goal_progress = False
         success_bonus_once = False
