@@ -41,9 +41,18 @@ import numpy as np
 import torch
 
 
-def _apply_play_commands(env, x_vel, y_vel, delta_yaw=0.0):
-    env.commands[:, 0] = x_vel
-    env.commands[:, 1] = y_vel
+def _sample_play_x_commands(env, x_range):
+    low, high = float(x_range[0]), float(x_range[1])
+    return low + (high - low) * torch.rand(env.num_envs, device=env.device)
+
+
+def _apply_play_commands(env, x_vel, y_vel, delta_yaw=0.0, env_ids=None):
+    if env_ids is None:
+        env.commands[:, 0] = x_vel if torch.is_tensor(x_vel) else float(x_vel)
+        env.commands[:, 1] = y_vel
+    else:
+        env.commands[env_ids, 0] = x_vel[env_ids] if torch.is_tensor(x_vel) else float(x_vel)
+        env.commands[env_ids, 1] = y_vel
     if hasattr(env, '_update_goal_commands'):
         env._update_goal_commands()
     else:
@@ -65,7 +74,7 @@ def _sync_play_command_obs(env):
     return env.get_observations()
 
 
-def play(args, x_vel=1.0, y_vel=0.0, delta_yaw=0.0):
+def play(args, x_vel=1.0, y_vel=0.0, delta_yaw=0.0, x_vel_range=(1.0, 3.0)):
     check_cuda_runtime_compat()
     env_cfg, train_cfg = task_registry.get_cfgs(name=args.task)
     # override some parameters for testing
@@ -82,11 +91,14 @@ def play(args, x_vel=1.0, y_vel=0.0, delta_yaw=0.0):
     env_cfg.commands.heading_command = False
     # env_cfg.terrain.mesh_type = 'plane'
     # prepare environment
+    env_cfg.commands.ranges.lin_vel_x = [float(x_vel_range[0]), float(x_vel_range[1])]
     env, _ = task_registry.make_env(name=args.task, args=args, env_cfg=env_cfg)
     if args.web:
         web_viewer = webviewer.WebViewer()
         web_viewer.setup(env)
-    _apply_play_commands(env, x_vel, y_vel, delta_yaw)
+    play_x_vel = _sample_play_x_commands(env, x_vel_range)
+    _apply_play_commands(env, play_x_vel, y_vel, delta_yaw)
+    print(f"[play] sampling command x velocity in [{x_vel_range[0]}, {x_vel_range[1]}] m/s")
     env.compute_observations()
 
     obs = _sync_play_command_obs(env)
@@ -116,7 +128,10 @@ def play(args, x_vel=1.0, y_vel=0.0, delta_yaw=0.0):
     
         actions = policy(obs.detach())
         obs, _, rews, dones, infos, _, _ = env.step(actions.detach())
-        _apply_play_commands(env, x_vel, y_vel, delta_yaw)
+        done_env_ids = dones.nonzero(as_tuple=False).flatten() if torch.is_tensor(dones) else torch.tensor([], device=env.device, dtype=torch.long)
+        if len(done_env_ids) > 0:
+            play_x_vel[done_env_ids] = _sample_play_x_commands(env, x_vel_range)[done_env_ids]
+        _apply_play_commands(env, play_x_vel, y_vel, delta_yaw)
         obs = _sync_play_command_obs(env)
 
         if args.web:
@@ -168,4 +183,4 @@ if __name__ == '__main__':
     RECORD_FRAMES = False
     MOVE_CAMERA = False
     args = get_args()
-    play(args, x_vel=1.0, y_vel=0.0, delta_yaw=0.0)
+    play(args, x_vel=1.0, y_vel=0.0, delta_yaw=0.0, x_vel_range=(1.0, 3.0))

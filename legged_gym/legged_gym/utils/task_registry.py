@@ -92,8 +92,12 @@ class TaskRegistry():
 
     GO2W_CORE_REWARD_NAMES = [
         "goal_progress",
+        "goal_progress_delta",
         "tracking_delta_yaw",
         "goal_bonus",
+        "success_bonus",
+        "early_success",
+        "time_penalty",
         "wheel_clearance",
         "wheel_climb_drive",
         "wheel_spin_without_progress",
@@ -158,7 +162,7 @@ class TaskRegistry():
         scales.wheel_spin_without_progress = 0.0
 
         env_cfg.rewards.min_goal_speed = 0.0
-        env_cfg.rewards.max_goal_speed = 0.6
+        env_cfg.rewards.max_goal_speed = 2.0
         env_cfg.rewards.stop_cmd_threshold = 0.05
         env_cfg.rewards.final_goal_bonus = 0.0
         env_cfg.rewards.obstacle_height_offset = 0.0
@@ -168,15 +172,24 @@ class TaskRegistry():
         env_cfg.asset.penalize_contacts_on = ["base", "trunk", "thigh", "calf"]
         env_cfg.asset.terminate_after_contacts_on = ["base", "trunk"]
         env_cfg.commands.ranges.lin_vel_y = [0.0, 0.0]
+        env_cfg.commands.ranges.lin_vel_x = [0.0, 2.0]
         return env_cfg
 
     def apply_go2w_stage2_scales(self, env_cfg):
         env_cfg = self.remove_legacy_go2w_reward_scales(env_cfg)
         scales = env_cfg.rewards.scales
 
-        scales.goal_progress = 3.0
+        # Stage2 alignment objective: reaching the final goal early should
+        # return more than simply surviving for a full episode. Legacy
+        # goal_progress is kept but reduced; delta progress and one-shot
+        # terminal success terms are controlled by cfg switches below.
+        scales.goal_progress = 1.0
+        scales.goal_progress_delta = 8.0
         scales.tracking_delta_yaw = 0.8
-        scales.goal_bonus = 1.5
+        scales.goal_bonus = 0.5
+        scales.success_bonus = 12.0
+        scales.early_success = 6.0
+        scales.time_penalty = -0.05
 
         scales.wheel_clearance = 1.0
         scales.wheel_climb_drive = 0.1
@@ -195,13 +208,21 @@ class TaskRegistry():
         scales.dof_pos_limits = -0.5
         scales.hip_action_l2 = -0.05
 
-        scales.wheel_slip = -0.3
+        scales.wheel_slip = -0.3 * float(getattr(env_cfg.rewards, 'wheel_slip_scale_multiplier', 1.0))
         scales.stand_still = -0.01
         scales.collision = -0.3
         scales.termination = -0.8
 
+        env_cfg.rewards.reward_align_stage2 = True
+        env_cfg.rewards.use_delta_goal_progress = True
+        env_cfg.rewards.success_bonus_once = True
+        env_cfg.rewards.use_time_penalty = True
+        env_cfg.rewards.reduce_alive_reward_stage2 = True
+        env_cfg.rewards.log_reward_terms_detail = True
+        env_cfg.rewards.goal_progress_delta_max = 1.0
+        env_cfg.rewards.wheel_slip_scale_multiplier = 1.0
         env_cfg.rewards.min_goal_speed = 0.15
-        env_cfg.rewards.max_goal_speed = 0.8
+        env_cfg.rewards.max_goal_speed = 4.0
         env_cfg.rewards.stop_cmd_threshold = 0.05
         env_cfg.rewards.final_goal_bonus = 5.0
         env_cfg.rewards.obstacle_height_offset = 0.06
@@ -212,6 +233,22 @@ class TaskRegistry():
         env_cfg.asset.penalize_contacts_on = ["base", "trunk", "thigh", "calf"]
         env_cfg.asset.terminate_after_contacts_on = ["base", "trunk"]
         env_cfg.commands.ranges.lin_vel_y = [0.0, 0.0]
+        env_cfg.commands.use_continuous_speed_curriculum = True
+        env_cfg.commands.curriculum_start_speed = 2.0
+        env_cfg.commands.curriculum_goal_speed = 4.0
+        env_cfg.commands.curriculum_target_speed = 4.0
+        env_cfg.commands.curriculum_min_ratio = 0.0
+        env_cfg.commands.curriculum_max_ratio = 1.0
+        env_cfg.commands.curriculum_success_high = 0.75
+        env_cfg.commands.curriculum_success_low = 0.35
+        env_cfg.commands.curriculum_update_interval = 100
+        env_cfg.commands.curriculum_increase_step = 0.03
+        env_cfg.commands.curriculum_decrease_step = 0.01
+        env_cfg.commands.curriculum_hold_on_drop = True
+        env_cfg.commands.curriculum_metric = 'progress'
+        env_cfg.commands.curriculum_progress_high = 0.045
+        env_cfg.commands.curriculum_progress_low = 0.015
+        env_cfg.commands.curriculum_intermediate_goal_high = 0.25
 
         print("[go2w stage2 core reward scales]")
         for name in self.GO2W_CORE_REWARD_NAMES:
@@ -303,7 +340,10 @@ class TaskRegistry():
 
             if stage == 0 and getattr(env_cfg.asset, 'name', '') == 'go2w':
                 env_cfg = self.apply_go2w_stage0_scales(env_cfg)
-                env_cfg.commands.ranges.lin_vel_x = [0.0, 0.8]
+                env_cfg.commands.ranges.lin_vel_x = [0.0, 3.0]
+            elif stage == 2 and getattr(env_cfg.asset, 'name', '') == 'go2w':
+                env_cfg = self.apply_go2w_stage2_scales(env_cfg)
+                env_cfg.commands.ranges.lin_vel_x = [0.0, 3.0]
             elif stage == 4 and getattr(env_cfg.asset, 'name', '') == 'go2w':
                 env_cfg = self.apply_go2w_stage2_scales(env_cfg)
                 env_cfg.rewards.scales.goal_progress = 2.0
@@ -311,9 +351,7 @@ class TaskRegistry():
                 env_cfg.rewards.scales.goal_bonus = 1.5
                 env_cfg.rewards.tracking_sigma = 0.05
                 env_cfg.commands.ranges.lin_vel_x = [0.0, 0.8]
-            elif stage == 2 and getattr(env_cfg.asset, 'name', '') == 'go2w':
-                env_cfg = self.apply_go2w_stage2_scales(env_cfg)
-                env_cfg.commands.ranges.lin_vel_x = [0.0, 1.5]
+            
 
         if train_cfg is not None:
             print("Set train learning stage to {}".format(stage))
@@ -371,11 +409,13 @@ class TaskRegistry():
         runner = HIMOnPolicyRunner(env, train_cfg_dict, log_dir, device=args.rl_device)
         #save resume path before creating a new log_dir
         resume = train_cfg.runner.resume
+        resume_path = None
         if resume:
             # load previously trained model
             resume_path = get_load_path(log_root, load_run=train_cfg.runner.load_run, checkpoint=train_cfg.runner.checkpoint)
             print(f"Loading model from: {resume_path}")
             runner.load(resume_path)
+        runner.resume_path = resume_path
         return runner, train_cfg
 
 # make global task registry

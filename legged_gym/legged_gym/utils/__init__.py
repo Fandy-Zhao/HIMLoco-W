@@ -31,11 +31,6 @@
 from .helpers import class_to_dict, get_load_path, get_args, export_policy_as_jit, set_seed, update_class_from_dict
 from .task_registry import task_registry
 from .logger import Logger
-from .webviewer import WebViewer
+from .train_metadata import save_train_metadata
 from .math import *
-
-def __getattr__(name):
-    if name == "Terrain":
-        from .terrain import Terrain
-        return Terrain
-    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+from .terrain import Terrain

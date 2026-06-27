@@ -135,7 +135,7 @@ class OnPolicyRunner:
             if self.log_dir is not None:
                 self.log(locals())
             if it % self.save_interval == 0:
-                self.save(os.path.join(self.log_dir, 'model_{}.pt'.format(it)))
+                self.save(os.path.join(self.log_dir, 'model_{}.pt'.format(it)), iteration=it)
             ep_infos.clear()
         
         self.current_learning_iteration += num_learning_iterations
@@ -210,13 +210,18 @@ class OnPolicyRunner:
                                locs['num_learning_iterations'] - locs['it']):.1f}s\n""")
         print(log_string)
 
-    def save(self, path, infos=None):
+    def save(self, path, infos=None, iteration=None):
+        from legged_gym.utils.train_metadata import save_latest_checkpoint_metadata
+
+        save_iteration = self.current_learning_iteration if iteration is None else int(iteration)
+        self.last_saved_iteration = save_iteration
         torch.save({
             'model_state_dict': self.alg.actor_critic.state_dict(),
             'optimizer_state_dict': self.alg.optimizer.state_dict(),
-            'iter': self.current_learning_iteration,
+            'iter': save_iteration,
             'infos': infos,
             }, path)
+        save_latest_checkpoint_metadata(path, self)
 
     def load(self, path, load_optimizer=True):
         loaded_dict = torch.load(path)

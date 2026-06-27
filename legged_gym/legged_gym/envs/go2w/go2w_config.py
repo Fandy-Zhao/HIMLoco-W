@@ -164,6 +164,19 @@ class GO2WRoughCfg(LeggedRobotCfg):
         obstacle_height_threshold = 0.06
         gap_height_threshold = 0.06
         obstacle_probe_distances = [0.25, 0.40, 0.55, 0.70]
+        reward_align_stage2 = False
+        use_delta_goal_progress = False
+        success_bonus_once = False
+        use_time_penalty = False
+        reduce_alive_reward_stage2 = False
+        log_reward_terms_detail = False
+        goal_progress_delta_max = 1.0
+        wheel_slip_scale_multiplier = 1.0
+        healthy_yaw_threshold = 0.6
+        healthy_base_height_min = 0.18
+        healthy_base_height_max = 0.65
+        healthy_roll_pitch_proxy_max = 0.65
+        healthy_wheel_slip_max = 0.8
 
         class scales:
             termination = -0.8

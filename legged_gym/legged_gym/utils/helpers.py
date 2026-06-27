@@ -169,6 +169,10 @@ def get_args():
         {"name": "--max_iterations", "type": int, "help": "Maximum number of training iterations. Overrides config file if provided."},
         {"name": "--web", "action": "store_true", "default": False, "help": "Use web viewer for headless rendering"},
         {"name": "--stage", "type": int, "default": None, "help": "Parkour curriculum stage. Overrides supported terrain and training config fields if provided."},
+        {"name": "--eval_episodes", "type": int, "default": 256, "help": "Number of completed episodes for goal-health evaluation."},
+        {"name": "--out_dir", "type": str, "default": "reports/goal_health_eval", "help": "Output directory for evaluation reports."},
+        {"name": "--fixed_vx", "type": float, "default": None, "help": "Optional fixed x velocity command during evaluation."},
+        {"name": "--fixed_vy", "type": float, "default": 0.0, "help": "Optional fixed y velocity command during evaluation."},
     ]
     # parse arguments
     args = gymutil.parse_arguments(

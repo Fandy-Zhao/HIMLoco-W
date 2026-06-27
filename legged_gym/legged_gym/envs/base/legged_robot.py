@@ -182,6 +182,7 @@ class LeggedRobot(BaseTask):
         """
         if len(env_ids) == 0:
             return
+        episode_details = self._collect_episode_health_details(env_ids) if hasattr(self, '_collect_episode_health_details') else None
         # update curriculum
         if self.cfg.terrain.curriculum:
             self._update_terrain_curriculum(env_ids)
@@ -239,6 +240,18 @@ class LeggedRobot(BaseTask):
             self.episode_sums[key][env_ids] = 0.
         if goal_success_rate is not None:
             self.extras["episode"]["goal_success_rate"] = goal_success_rate
+            if hasattr(self, '_update_continuous_speed_curriculum'):
+                self._update_continuous_speed_curriculum(goal_success_rate)
+        if hasattr(self, 'speed_curriculum_ratio'):
+            self.extras["episode"]["curriculum_ratio"] = self.speed_curriculum_ratio.clone()
+            self.extras["episode"]["current_speed_max"] = torch.tensor(float(self.command_ranges["lin_vel_x"][1]), device=self.device)
+            self.extras["episode"]["success_rate_ema"] = self.speed_curriculum_success_ema.clone()
+            if hasattr(self, 'speed_curriculum_progress_ema'):
+                self.extras["episode"]["progress_ema"] = self.speed_curriculum_progress_ema.clone()
+            if hasattr(self, 'speed_curriculum_intermediate_goal_ema'):
+                self.extras["episode"]["intermediate_goal_rate_ema"] = self.speed_curriculum_intermediate_goal_ema.clone()
+        if episode_details is not None:
+            self.extras["episode_details"] = episode_details
         if len(env_ids) > 0 and self.commands.shape[1] >= 3:
             heading_error = self._get_heading_error()
             current_yaw = self._get_base_yaw()
@@ -266,6 +279,8 @@ class LeggedRobot(BaseTask):
             adds each terms to the episode sums and to the total reward
         """
         self.rew_buf[:] = 0.
+        if hasattr(self, '_prepare_goal_alignment_rewards'):
+            self._prepare_goal_alignment_rewards()
         for i in range(len(self.reward_functions)):
             name = self.reward_names[i]
             rew = self.reward_functions[i]() * self.reward_scales[name]
@@ -278,6 +293,8 @@ class LeggedRobot(BaseTask):
             rew = self._reward_termination() * self.reward_scales["termination"]
             self.rew_buf += rew
             self.episode_sums["termination"] += rew
+        if hasattr(self, '_finalize_goal_alignment_rewards'):
+            self._finalize_goal_alignment_rewards()
     
     def compute_observations(self):
         """ Computes observations
@@ -548,6 +565,18 @@ class LeggedRobot(BaseTask):
         self.target_yaw = torch.zeros(self.num_envs, dtype=torch.float, device=self.device, requires_grad=False)
         self.goal_yaw_error = torch.zeros(self.num_envs, dtype=torch.float, device=self.device, requires_grad=False)
         self.target_pos_rel = torch.zeros(self.num_envs, 2, dtype=torch.float, device=self.device, requires_grad=False)
+        self.prev_goal_dist = torch.zeros(self.num_envs, dtype=torch.float, device=self.device, requires_grad=False)
+        self.curr_goal_dist = torch.zeros(self.num_envs, dtype=torch.float, device=self.device, requires_grad=False)
+        self.goal_progress_delta_raw = torch.zeros(self.num_envs, dtype=torch.float, device=self.device, requires_grad=False)
+        self.goal_success_event = torch.zeros(self.num_envs, dtype=torch.bool, device=self.device, requires_grad=False)
+        self.success_latched = torch.zeros(self.num_envs, dtype=torch.bool, device=self.device, requires_grad=False)
+        self.speed_curriculum_ratio = torch.tensor(float(getattr(self.cfg.commands, 'curriculum_min_ratio', 0.0)), dtype=torch.float, device=self.device)
+        self.speed_curriculum_success_ema = torch.tensor(0.0, dtype=torch.float, device=self.device)
+        self.speed_curriculum_progress_ema = torch.tensor(0.0, dtype=torch.float, device=self.device)
+        self.speed_curriculum_intermediate_goal_ema = torch.tensor(0.0, dtype=torch.float, device=self.device)
+        self.last_speed_curriculum_update = 0
+        if bool(getattr(self.cfg.commands, 'use_continuous_speed_curriculum', False)):
+            self._apply_continuous_speed_curriculum_limit()
         if not self._goal_commands_enabled() or self.num_goal_waypoints <= 0:
             return
         if not hasattr(self, 'terrain') or not hasattr(self.terrain, 'goals'):
@@ -556,7 +585,9 @@ class LeggedRobot(BaseTask):
         if terrain_goals.ndim != 4 or terrain_goals.shape[-1] != 3 or terrain_goals.shape[2] == 0:
             return
         self.terrain_goals = terrain_goals
-        self._refresh_env_goals(torch.arange(self.num_envs, device=self.device, dtype=torch.long))
+        env_ids = torch.arange(self.num_envs, device=self.device, dtype=torch.long)
+        self._refresh_env_goals(env_ids)
+        self.prev_goal_dist[:] = self._compute_goal_distance(env_ids)
 
     def _refresh_env_goals(self, env_ids):
         if env_ids is None or len(env_ids) == 0 or self.terrain_goals is None:
@@ -575,6 +606,38 @@ class LeggedRobot(BaseTask):
             self.env_goals[env_ids, copy_count:] = goals[:, copy_count - 1:copy_count]
         self.env_has_goals[env_ids] = True
 
+    def _collect_episode_health_details(self, env_ids):
+        if not hasattr(self, 'cur_goal_idx') or not hasattr(self, 'reached_goal'):
+            return None
+        env_ids = env_ids.to(device=self.device, dtype=torch.long)
+        final_goal_idx = max(int(getattr(self.cfg.terrain, 'num_goals', 1)) - 1, 0)
+        raw_success = (self.cur_goal_idx[env_ids] >= final_goal_idx) & self.reached_goal[env_ids]
+        goal_dist = self._compute_goal_distance(env_ids) if hasattr(self, '_compute_goal_distance') else torch.zeros(len(env_ids), device=self.device)
+        yaw_error = torch.abs(self._get_delta_yaw_to_goal()[env_ids]) if hasattr(self, '_get_delta_yaw_to_goal') else torch.zeros(len(env_ids), device=self.device)
+        base_height = self.root_states[env_ids, 2]
+        roll_pitch_proxy = torch.norm(self.projected_gravity[env_ids, :2], dim=1)
+        wheel_slip = torch.abs(self._reward_wheel_slip()[env_ids]) if hasattr(self, '_reward_wheel_slip') else torch.zeros(len(env_ids), device=self.device)
+        collision = self._reward_collision()[env_ids] > 0 if hasattr(self, '_reward_collision') else torch.zeros(len(env_ids), dtype=torch.bool, device=self.device)
+        timeout = self.time_out_buf[env_ids].bool() if hasattr(self, 'time_out_buf') else torch.zeros(len(env_ids), dtype=torch.bool, device=self.device)
+        yaw_ok = yaw_error < float(getattr(self.cfg.rewards, 'healthy_yaw_threshold', 0.6))
+        height_ok = (base_height > float(getattr(self.cfg.rewards, 'healthy_base_height_min', 0.18))) & (base_height < float(getattr(self.cfg.rewards, 'healthy_base_height_max', 0.65)))
+        roll_pitch_ok = roll_pitch_proxy < float(getattr(self.cfg.rewards, 'healthy_roll_pitch_proxy_max', 0.65))
+        slip_ok = wheel_slip < float(getattr(self.cfg.rewards, 'healthy_wheel_slip_max', 0.8))
+        healthy_success = raw_success & yaw_ok & height_ok & roll_pitch_ok & slip_ok & (~collision) & (~timeout)
+        return {
+            'env_ids': env_ids.detach().cpu(),
+            'raw_success': raw_success.detach().cpu(),
+            'healthy_success': healthy_success.detach().cpu(),
+            'goal_dist_final': goal_dist.detach().cpu(),
+            'yaw_error_final': yaw_error.detach().cpu(),
+            'base_height_final': base_height.detach().cpu(),
+            'roll_pitch_proxy_final': roll_pitch_proxy.detach().cpu(),
+            'wheel_slip_final': wheel_slip.detach().cpu(),
+            'collision_or_stumble': collision.detach().cpu(),
+            'timeout': timeout.detach().cpu(),
+            'episode_length': self.episode_length_buf[env_ids].detach().cpu(),
+        }
+
     def _reset_goals(self, env_ids):
         if not hasattr(self, 'env_goals'):
             return
@@ -582,12 +645,90 @@ class LeggedRobot(BaseTask):
         self.cur_goal_idx[env_ids] = 0
         self.reach_goal_timer[env_ids] = 0.
         self.reached_goal[env_ids] = False
+        if hasattr(self, 'success_latched'):
+            self.success_latched[env_ids] = False
         self._refresh_env_goals(env_ids)
+        if hasattr(self, 'prev_goal_dist'):
+            self.prev_goal_dist[env_ids] = self._compute_goal_distance(env_ids)
 
     def _gather_current_goals(self, future=0):
         idx = torch.clamp(self.cur_goal_idx + int(future), 0, self.env_goals.shape[1] - 1)
         env_ids = torch.arange(self.num_envs, device=self.device)
         return self.env_goals[env_ids, idx]
+
+    def _compute_goal_distance(self, env_ids=None):
+        if not hasattr(self, 'env_goals') or not hasattr(self, 'cur_goal_idx'):
+            if env_ids is None:
+                return torch.zeros(self.num_envs, dtype=torch.float, device=self.device)
+            return torch.zeros(len(env_ids), dtype=torch.float, device=self.device)
+        if env_ids is None:
+            env_ids = torch.arange(self.num_envs, device=self.device, dtype=torch.long)
+        env_ids = env_ids.to(device=self.device, dtype=torch.long)
+        cur_goal = self.env_goals[env_ids, self.cur_goal_idx[env_ids]]
+        return torch.norm(self.root_states[env_ids, :2] - cur_goal[:, :2], dim=1)
+
+    def _prepare_goal_alignment_rewards(self):
+        if not bool(getattr(self.cfg.rewards, 'reward_align_stage2', False)):
+            return
+        self.curr_goal_dist[:] = self._compute_goal_distance()
+        max_delta = float(getattr(self.cfg.rewards, 'goal_progress_delta_max', 1.0))
+        self.goal_progress_delta_raw[:] = torch.clamp(self.prev_goal_dist - self.curr_goal_dist, -max_delta, max_delta)
+        final_goal_idx = max(int(getattr(self.cfg.terrain, 'num_goals', 1)) - 1, 0)
+        raw_success = (self.cur_goal_idx >= final_goal_idx) & self.reached_goal
+        self.goal_success_event[:] = raw_success & (~self.success_latched)
+        self.success_latched[self.goal_success_event] = True
+
+    def _finalize_goal_alignment_rewards(self):
+        if hasattr(self, 'curr_goal_dist') and hasattr(self, 'prev_goal_dist'):
+            self.prev_goal_dist[:] = self.curr_goal_dist
+
+    def _apply_continuous_speed_curriculum_limit(self):
+        ratio = float(self.speed_curriculum_ratio.item()) if hasattr(self, 'speed_curriculum_ratio') else 0.0
+        start = float(getattr(self.cfg.commands, 'curriculum_start_speed', self.command_ranges['lin_vel_x'][1]))
+        goal = float(getattr(self.cfg.commands, 'curriculum_goal_speed', getattr(self.cfg.commands, 'curriculum_target_speed', self.command_ranges['lin_vel_x'][1])))
+        self.command_ranges['lin_vel_x'][1] = start + ratio * (goal - start)
+
+    def _update_continuous_speed_curriculum(self, current_success_rate):
+        if not bool(getattr(self.cfg.commands, 'use_continuous_speed_curriculum', False)):
+            return
+        interval = int(getattr(self.cfg.commands, 'curriculum_update_interval', 100))
+        if self.common_step_counter - self.last_speed_curriculum_update < interval:
+            return
+        self.last_speed_curriculum_update = self.common_step_counter
+        alpha = float(getattr(self.cfg.commands, 'curriculum_ema_alpha', 0.1))
+        self.speed_curriculum_success_ema = alpha * current_success_rate + (1.0 - alpha) * self.speed_curriculum_success_ema
+
+        progress_signal = torch.clamp(self.goal_progress_delta_raw, min=0.0).mean() if hasattr(self, 'goal_progress_delta_raw') else torch.tensor(0.0, device=self.device)
+        self.speed_curriculum_progress_ema = alpha * progress_signal + (1.0 - alpha) * self.speed_curriculum_progress_ema
+        if hasattr(self, 'cur_goal_idx'):
+            final_goal_idx = max(int(getattr(self.cfg.terrain, 'num_goals', 1)) - 1, 0)
+            intermediate_goal_rate = ((self.cur_goal_idx > 0) & (self.cur_goal_idx < final_goal_idx)).float().mean()
+        else:
+            intermediate_goal_rate = torch.tensor(0.0, device=self.device)
+        self.speed_curriculum_intermediate_goal_ema = alpha * intermediate_goal_rate + (1.0 - alpha) * self.speed_curriculum_intermediate_goal_ema
+
+        ratio = float(self.speed_curriculum_ratio.item())
+        metric = str(getattr(self.cfg.commands, 'curriculum_metric', 'success'))
+        if metric == 'progress':
+            high = float(getattr(self.cfg.commands, 'curriculum_progress_high', 0.045))
+            low = float(getattr(self.cfg.commands, 'curriculum_progress_low', 0.015))
+            intermediate_high = float(getattr(self.cfg.commands, 'curriculum_intermediate_goal_high', 0.25))
+            advance = float(self.speed_curriculum_progress_ema.item()) > high or float(self.speed_curriculum_intermediate_goal_ema.item()) > intermediate_high
+            retreat = float(self.speed_curriculum_progress_ema.item()) < low
+        else:
+            high = float(getattr(self.cfg.commands, 'curriculum_success_high', 0.75))
+            low = float(getattr(self.cfg.commands, 'curriculum_success_low', 0.35))
+            advance = float(self.speed_curriculum_success_ema.item()) > high
+            retreat = float(self.speed_curriculum_success_ema.item()) < low
+        if advance:
+            ratio += float(getattr(self.cfg.commands, 'curriculum_increase_step', 0.03))
+        elif retreat and not bool(getattr(self.cfg.commands, 'curriculum_hold_on_drop', True)):
+            ratio -= float(getattr(self.cfg.commands, 'curriculum_decrease_step', 0.01))
+        min_ratio = float(getattr(self.cfg.commands, 'curriculum_min_ratio', 0.0))
+        max_ratio = float(getattr(self.cfg.commands, 'curriculum_max_ratio', 1.0))
+        ratio = max(min_ratio, min(max_ratio, ratio))
+        self.speed_curriculum_ratio.fill_(ratio)
+        self._apply_continuous_speed_curriculum_limit()
 
     def _update_goals(self):
         if not hasattr(self, 'env_goals') or self.terrain_goals is None:
@@ -1363,6 +1504,27 @@ class LeggedRobot(BaseTask):
     def _reward_tracking_goal_vel_cmd_scaled(self):
         return self._reward_goal_progress()
 
+    def _reward_goal_progress_delta(self):
+        if not bool(getattr(self.cfg.rewards, 'use_delta_goal_progress', False)) or not hasattr(self, 'goal_progress_delta_raw'):
+            return torch.zeros(self.num_envs, dtype=torch.float, device=self.device)
+        return torch.clamp(self.goal_progress_delta_raw, min=0.0)
+
+    def _reward_success_bonus(self):
+        if not bool(getattr(self.cfg.rewards, 'success_bonus_once', False)) or not hasattr(self, 'goal_success_event'):
+            return torch.zeros(self.num_envs, dtype=torch.float, device=self.device)
+        return self.goal_success_event.float()
+
+    def _reward_early_success(self):
+        if not bool(getattr(self.cfg.rewards, 'use_time_penalty', False)) or not hasattr(self, 'goal_success_event'):
+            return torch.zeros(self.num_envs, dtype=torch.float, device=self.device)
+        progress_ratio = 1.0 - self.episode_length_buf.float() / float(self.max_episode_length)
+        return torch.clamp(progress_ratio, min=0.0, max=1.0) * self.goal_success_event.float()
+
+    def _reward_time_penalty(self):
+        if not bool(getattr(self.cfg.rewards, 'use_time_penalty', False)):
+            return torch.zeros(self.num_envs, dtype=torch.float, device=self.device)
+        return torch.ones(self.num_envs, dtype=torch.float, device=self.device)
+
     def _reward_goal_progress(self):
         if not hasattr(self, 'env_goals') or not hasattr(self, 'cur_goal_idx'):
             return torch.zeros(self.num_envs, dtype=torch.float, device=self.device)
@@ -1377,6 +1539,8 @@ class LeggedRobot(BaseTask):
         stop_cmd_threshold = float(getattr(self.cfg.rewards, 'stop_cmd_threshold', 0.05))
         min_goal_speed = float(getattr(self.cfg.rewards, 'min_goal_speed', 0.0))
         max_goal_speed = float(getattr(self.cfg.rewards, 'max_goal_speed', 0.8))
+        if bool(getattr(self.cfg.commands, 'use_continuous_speed_curriculum', False)):
+            max_goal_speed = min(max_goal_speed, float(self.command_ranges['lin_vel_x'][1]))
         target_speed = torch.clamp(cmd_speed, min=min_goal_speed, max=max_goal_speed)
         target_speed = torch.where(cmd_speed <= stop_cmd_threshold, torch.zeros_like(target_speed), target_speed)
         reward = torch.exp(-torch.square(vel_to_goal - target_speed) / self.cfg.rewards.tracking_sigma)

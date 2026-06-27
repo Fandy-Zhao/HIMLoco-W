@@ -125,6 +125,23 @@ class LeggedRobotCfg(BaseConfig):
         heading_command = True # legacy flag; commands[:, 2] now stores target yaw directly
         use_goal_yaw_command = False
         goal_yaw_fallback_random = True
+        use_continuous_speed_curriculum = False
+        curriculum_start_speed = 2.0
+        curriculum_goal_speed = 4.0
+        curriculum_target_speed = 4.0  # legacy alias for curriculum_goal_speed
+        curriculum_min_ratio = 0.0
+        curriculum_max_ratio = 1.0
+        curriculum_success_high = 0.75
+        curriculum_success_low = 0.35
+        curriculum_update_interval = 100
+        curriculum_increase_step = 0.03
+        curriculum_decrease_step = 0.01
+        curriculum_hold_on_drop = True
+        curriculum_ema_alpha = 0.1
+        curriculum_metric = 'progress'
+        curriculum_progress_high = 0.045
+        curriculum_progress_low = 0.015
+        curriculum_intermediate_goal_high = 0.25
         class ranges:
             lin_vel_x = [-1.0, 1.0] # min max [m/s]
             lin_vel_y = [-1.0, 1.0]   # min max [m/s]
@@ -340,7 +357,7 @@ class LeggedRobotCfgPPO(BaseConfig):
         max_iterations = 200000 # number of policy updates
 
         # logging
-        save_interval = 20 # check for potential saves every this many iterations
+        save_interval = 500 # check for potential saves every this many iterations
         experiment_name = 'test'
         run_name = ''
         # load and resume
