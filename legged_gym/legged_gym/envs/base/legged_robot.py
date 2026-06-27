@@ -208,6 +208,10 @@ class LeggedRobot(BaseTask):
         self._reset_goals(env_ids)
         self._update_goals()
         self._update_goal_yaw_command()
+        if hasattr(self, 'prev_goal_dist'):
+            self.prev_goal_dist[env_ids] = self._compute_goal_distance(env_ids)
+        if hasattr(self, 'prev_abs_delta_yaw') and self.commands.shape[1] >= 3:
+            self.prev_abs_delta_yaw[env_ids] = torch.abs(self.commands[env_ids, 2])
         if hasattr(self, 'final_goal_reset_buf'):
             self.final_goal_reset_buf[env_ids] = False
 
@@ -568,9 +572,11 @@ class LeggedRobot(BaseTask):
         self.prev_goal_dist = torch.zeros(self.num_envs, dtype=torch.float, device=self.device, requires_grad=False)
         self.curr_goal_dist = torch.zeros(self.num_envs, dtype=torch.float, device=self.device, requires_grad=False)
         self.goal_progress_delta_raw = torch.zeros(self.num_envs, dtype=torch.float, device=self.device, requires_grad=False)
+        self.prev_abs_delta_yaw = torch.zeros(self.num_envs, dtype=torch.float, device=self.device, requires_grad=False)
         self.goal_reach_event = torch.zeros(self.num_envs, dtype=torch.bool, device=self.device, requires_grad=False)
         self.final_goal_event = torch.zeros(self.num_envs, dtype=torch.bool, device=self.device, requires_grad=False)
         self.goal_success_event = torch.zeros(self.num_envs, dtype=torch.bool, device=self.device, requires_grad=False)
+        self.goal_reached_buf = torch.zeros(self.num_envs, dtype=torch.bool, device=self.device, requires_grad=False)
         self.success_latched = torch.zeros(self.num_envs, dtype=torch.bool, device=self.device, requires_grad=False)
         self.speed_curriculum_ratio = torch.tensor(float(getattr(self.cfg.commands, 'curriculum_min_ratio', 0.0)), dtype=torch.float, device=self.device)
         self.speed_curriculum_success_ema = torch.tensor(0.0, dtype=torch.float, device=self.device)
@@ -653,11 +659,15 @@ class LeggedRobot(BaseTask):
             self.final_goal_event[env_ids] = False
         if hasattr(self, 'goal_success_event'):
             self.goal_success_event[env_ids] = False
+        if hasattr(self, 'goal_reached_buf'):
+            self.goal_reached_buf[env_ids] = False
         if hasattr(self, 'success_latched'):
             self.success_latched[env_ids] = False
         self._refresh_env_goals(env_ids)
         if hasattr(self, 'prev_goal_dist'):
             self.prev_goal_dist[env_ids] = self._compute_goal_distance(env_ids)
+        if hasattr(self, 'prev_abs_delta_yaw'):
+            self.prev_abs_delta_yaw[env_ids] = torch.abs(self.commands[env_ids, 2])
 
     def _gather_current_goals(self, future=0):
         idx = torch.clamp(self.cur_goal_idx + int(future), 0, self.env_goals.shape[1] - 1)
@@ -685,6 +695,8 @@ class LeggedRobot(BaseTask):
         self.goal_progress_delta_raw[:] = torch.clamp(self.prev_goal_dist - self.curr_goal_dist, -max_delta, max_delta)
 
     def _finalize_goal_alignment_rewards(self):
+        if not bool(getattr(self.cfg.rewards, 'reward_align_stage2', False)):
+            return
         if hasattr(self, 'curr_goal_dist') and hasattr(self, 'prev_goal_dist'):
             self.prev_goal_dist[:] = self.curr_goal_dist
 
@@ -1532,6 +1544,27 @@ class LeggedRobot(BaseTask):
             return torch.zeros(self.num_envs, dtype=torch.float, device=self.device)
         return torch.clamp(self.goal_progress_delta_raw, min=0.0)
 
+    def _reward_goal_delta_progress(self):
+        if not hasattr(self, 'prev_goal_dist') or not hasattr(self, 'curr_goal_dist'):
+            return torch.zeros(self.num_envs, dtype=torch.float, device=self.device)
+        curr_dist = self._compute_goal_distance()
+        delta = self.prev_goal_dist - curr_dist
+        progress_vel = delta / max(self.dt, 1e-6)
+        max_progress = float(getattr(self.cfg.rewards, 'goal_progress_delta_max', 1.0))
+        reward = torch.clamp(progress_vel, 0.0, max_progress)
+        self.curr_goal_dist[:] = curr_dist
+        self.goal_progress_delta_raw[:] = reward
+        self.prev_goal_dist[:] = curr_dist
+        return reward
+
+    def _reward_delta_yaw_progress(self):
+        if not hasattr(self, 'prev_abs_delta_yaw') or self.commands.shape[1] < 3:
+            return torch.zeros(self.num_envs, dtype=torch.float, device=self.device)
+        curr = torch.abs(self.commands[:, 2])
+        delta = self.prev_abs_delta_yaw - curr
+        self.prev_abs_delta_yaw[:] = curr
+        return torch.clamp(delta, -0.2, 0.2)
+
     def _reward_success_bonus(self):
         if not bool(getattr(self.cfg.rewards, 'success_bonus_once', False)) or not hasattr(self, 'goal_success_event'):
             return torch.zeros(self.num_envs, dtype=torch.float, device=self.device)
@@ -1609,7 +1642,15 @@ class LeggedRobot(BaseTask):
         if not hasattr(self, 'reached_goal'):
             return torch.zeros(self.num_envs, dtype=torch.float, device=self.device)
 
-        reward = self.reached_goal.float()
+        dist = self._compute_goal_distance() if hasattr(self, '_compute_goal_distance') else torch.zeros(self.num_envs, dtype=torch.float, device=self.device)
+        yaw_err = torch.abs(self.commands[:, 2]) if self.commands.shape[1] >= 3 else torch.zeros(self.num_envs, dtype=torch.float, device=self.device)
+        reached = (dist < float(getattr(self.cfg.rewards, 'goal_dist_thresh', 0.3))) & (yaw_err < float(getattr(self.cfg.rewards, 'goal_yaw_thresh', 0.4)))
+        if bool(getattr(self.cfg.rewards, 'success_bonus_once', True)) and hasattr(self, 'goal_reached_buf'):
+            reward = reached & (~self.goal_reached_buf)
+            self.goal_reached_buf |= reached
+            reward = reward.float()
+        else:
+            reward = reached.float()
         if hasattr(self, 'cur_goal_idx') and hasattr(self.cfg.terrain, 'num_goals'):
             final_goal_idx = int(self.cfg.terrain.num_goals) - 1
             final_reached = (self.cur_goal_idx >= final_goal_idx) & self.reached_goal

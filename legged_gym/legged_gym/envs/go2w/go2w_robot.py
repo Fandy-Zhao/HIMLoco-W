@@ -229,6 +229,12 @@ class Go2w(LeggedRobot):
     def _reward_hip_action_l2(self):
         return torch.sum(self.actions[:, [0, 4, 8, 12]] ** 2, dim=1)
 
+    def _reward_yaw_rate_l2(self):
+        yaw_rate = self.base_ang_vel[:, 2]
+        delta_yaw = torch.abs(self.commands[:, 2])
+        gate = torch.clamp(1.0 - delta_yaw / 0.5, 0.0, 1.0)
+        return gate * torch.square(yaw_rate)
+
     def _get_obstacle_ahead_mask(self):
         distances = getattr(self.cfg.rewards, 'obstacle_probe_distances', [0.25, 0.40, 0.55, 0.70])
         distances = torch.tensor(distances, dtype=torch.float, device=self.device)
@@ -295,13 +301,14 @@ class Go2w(LeggedRobot):
         rigid_body_state = self.rigid_body_states.view(self.num_envs, self.num_bodies, 13)
         wheel_pos = rigid_body_state[:, self.wheel_body_indices, :3]
         terrain_h = self._get_heights_at_points(wheel_pos[..., :2])
-        clearance = wheel_pos[..., 2] - terrain_h
-        target = getattr(self.cfg.rewards, 'wheel_clearance_target', 0.10)
-        err = torch.square(clearance - target)
+        margin = float(getattr(self.cfg.rewards, 'wheel_clearance_margin', 0.04))
+        target_z = terrain_h + float(getattr(self.cfg.asset, 'wheel_radius', 0.05)) + margin
+        clearance_error = torch.relu(target_z - wheel_pos[..., 2])
 
-        wheel_contact = self.contact_forces[:, self.wheel_body_indices, 2] > 1.0
-        reward = torch.sum(torch.exp(-err / 0.01) * (~wheel_contact).float(), dim=1)
-        reward *= self._get_obstacle_ahead_mask().float()
+        contact_threshold = float(getattr(self.cfg.rewards, 'contact_force_thresh', 1.0))
+        wheel_contact = torch.norm(self.contact_forces[:, self.wheel_body_indices, :], dim=-1) > contact_threshold
+        obstacle_gate = self._get_obstacle_ahead_mask().float().unsqueeze(1)
+        reward = torch.mean(obstacle_gate * (~wheel_contact).float() * torch.square(clearance_error), dim=1)
         return self._mask_invalid_terrain_reward(reward)
 
     def _reward_wheel_climb_drive(self):
@@ -324,10 +331,9 @@ class Go2w(LeggedRobot):
         if not hasattr(self, 'wheel_dof_indices'):
             return torch.zeros(self.num_envs, dtype=torch.float, device=self.device)
 
-        wheel_speed = torch.abs(self.dof_vel[:, self.wheel_dof_indices])
+        wheel_vel = torch.abs(self.dof_vel[:, self.wheel_dof_indices]).mean(dim=1)
         _, progress_vel, _, moving_cmd = self._get_goal_progress_state()
-        threshold = float(getattr(self.cfg.rewards, 'wheel_spin_progress_threshold', 0.05))
-        low_progress = progress_vel < threshold
-        reward = torch.mean(wheel_speed, dim=1) * low_progress.float() * moving_cmd.float()
-        reward *= self._get_obstacle_ahead_mask().float()
+        min_progress_speed = float(getattr(self.cfg.rewards, 'min_progress_speed', 0.05))
+        stuck = (progress_vel < min_progress_speed) & moving_cmd
+        reward = stuck.float() * torch.square(wheel_vel)
         return self._mask_invalid_terrain_reward(reward)

@@ -92,8 +92,9 @@ class TaskRegistry():
 
     GO2W_ACTIVE_REWARD_NAMES = [
         "goal_progress",
-        "goal_progress_delta",
+        "goal_delta_progress",
         "tracking_delta_yaw",
+        "delta_yaw_progress",
         "goal_bonus",
         "wheel_clearance",
         "wheel_climb_drive",
@@ -165,13 +166,14 @@ class TaskRegistry():
     GO2W_REWARD_PROFILES = {
         "stage0": {
             "scales": {
-                "goal_progress": 2.0,  # 基础速度跟踪：奖励沿当前目标方向达到命令速度。
-                "goal_progress_delta": 0.0,  # 关闭距离差分推进；stage0 不要求按路点持续推进。
-                "tracking_delta_yaw": 0.5,  # 弱朝向对齐：鼓励机身朝向当前目标方向。
-                "goal_bonus": 0.0,  # 关闭到点事件奖励，避免平地基础阶段刷 waypoint bonus。
+                "goal_progress": 1.0,  # 辅助速度跟踪：奖励沿当前目标方向达到命令速度。
+                "goal_delta_progress": 2.0,  # 真实距离进展：奖励向当前 waypoint 缩短距离。
+                "tracking_delta_yaw": 1.0,  # 鼓励机身朝向当前目标方向。
+                "delta_yaw_progress": 0.5,  # 奖励 delta_yaw 误差逐步减小。
+                "goal_bonus": 3.0,  # 一次性 waypoint 到达奖励，闭合 goal-following 目标。
                 "wheel_clearance": 0.0,  # 关闭轮子抬高奖励；stage0 不训练越障动作。
                 "wheel_climb_drive": 0.0,  # 关闭障碍附近轮子驱动奖励；stage0 只学基础行驶。
-                "wheel_spin_without_progress": 0.0,  # 关闭空转惩罚；基础阶段先避免过多轮足约束。
+                "wheel_spin_without_progress": -1e-4,  # 很轻的空转惩罚，抑制轮子高速转但不前进。
                 "wheel_slip": -0.1,  # 轻惩罚轮子横向滑移，减少侧滑但不过度限制探索。
                 "base_height": -0.5,  # 惩罚基座高度偏离目标高度，保持基础站姿。
                 "orientation": -1.0,  # 惩罚 roll/pitch 倾斜，平地阶段保持身体稳定。
@@ -191,14 +193,19 @@ class TaskRegistry():
             "params": {
                 "reward_align_stage2": False,  # 不计算 stage2 专用的路点距离差分缓存。
                 "use_delta_goal_progress": False,  # `_reward_goal_progress_delta` 即使存在也返回 0。
+                "success_bonus_once": True,  # goal_bonus 使用现有 waypoint event buffer，保持一次性发放。
+                "goal_progress_delta_max": 1.0,  # 限制距离进展速度奖励上界。
                 "min_goal_speed": 0.0,  # 允许低速/静止命令，适合基础跟踪预训练。
                 "max_goal_speed": 2.0,  # 限制 reward 中目标速度上界，低于命令采样最大值以稳定早期训练。
+                "min_progress_speed": 0.05,  # 低于该目标方向速度时认为轮子空转无有效进展。
                 "stop_cmd_threshold": 0.05,  # 命令速度低于该值时按停止目标处理。
                 "final_goal_bonus": 0.0,  # 关闭最终路点额外奖励。
                 "obstacle_height_offset": 0.0,  # 不因前方障碍提高基座高度目标。
                 "obstacle_height_threshold": 0.04,  # 前方高度升高超过该值才算障碍；stage0 仅保留默认阈值。
                 "gap_height_threshold": 0.06,  # 前方高度下降超过该值才算 gap；stage0 不启用相关奖励。
                 "wheel_clearance_target": 0.08,  # 轮子离地目标高度；stage0 scale 为 0，仅保留默认值。
+                "wheel_clearance_margin": 0.04,  # scale 为 0，仅作为 stage2 默认参考。
+                "contact_force_thresh": 1.0,  # 轮子接触判定阈值。
                 "only_positive_rewards": True,  # 裁剪总 reward 到非负，降低基础阶段早期崩溃风险。
             },
         },
@@ -211,40 +218,45 @@ class TaskRegistry():
         "stage2": {
             "scales": {
                 "goal_progress": 0.5,  # 辅助速度约束：保持朝目标速度合理，不作为主推进信号。
-                "goal_progress_delta": 8.0,  # 主推进奖励：按当前步到目标距离减少量给奖。
-                "tracking_delta_yaw": 0.8,  # 强化朝向目标，帮助复杂地形上对准障碍入口。
-                "goal_bonus": 2.0,  # 一次性路点到达奖励，配合 final_goal_bonus 奖励完成整段路线。
-                "wheel_clearance": 1.0,  # 障碍附近奖励轮子达到目标离地高度，辅助跨越台阶/墙/gap。
-                "wheel_climb_drive": 0.1,  # 障碍附近奖励接触轮正向驱动且产生目标方向进展。
-                "wheel_spin_without_progress": -0.02,  # 障碍附近惩罚轮子高速转但目标方向进展不足。
-                "wheel_slip": -0.3,  # 强惩罚轮子横向滑移，提升复杂地形牵引稳定性。
-                "base_height": -0.25,  # 弱化基座高度惩罚，允许越障时抬高或压低身体。
-                "orientation": -0.2,  # 弱化姿态惩罚，避免越障动作被过度压制。
-                "lin_vel_z": -0.8,  # 保留垂直速度惩罚，但比 stage0 弱以允许上台阶/落地。
+                "goal_delta_progress": 3.0,  # 主推进奖励：按当前步到目标距离减少速度给奖。
+                "tracking_delta_yaw": 1.0,  # 强化朝向目标，帮助复杂地形上对准障碍入口。
+                "delta_yaw_progress": 0.5,  # 奖励转向误差下降，避免只靠静态朝向奖励。
+                "goal_bonus": 5.0,  # 一次性路点到达奖励，配合 final_goal_bonus 奖励完成整段路线。
+                "wheel_clearance": -0.8,  # 障碍附近惩罚摆动轮轮心低于目标高度。
+                "wheel_climb_drive": 0.0,  # 保持关闭，不加入额外越障驱动 shaping。
+                "wheel_spin_without_progress": -5e-4,  # 轻惩罚轮子高速转但目标方向进展不足。
+                "wheel_slip": -0.1,  # 轻惩罚轮子横向滑移，避免压制必要越障探索。
+                "base_height": -0.2,  # 弱化基座高度惩罚，允许越障时抬高或压低身体。
+                "orientation": -0.5,  # 相对 stage0 放松姿态惩罚，但保留稳定性约束。
+                "lin_vel_z": -0.5,  # 允许上台阶/落地时短时竖直速度。
                 "ang_vel_xy": -0.03,  # 轻惩罚 roll/pitch 角速度，允许必要的身体摆动。
-                "yaw_rate_l2": -0.02,  # 惩罚无效快速转向，避免在障碍前抖动自旋。
+                "yaw_rate_l2": -0.005,  # 条件 yaw-rate 惩罚：delta_yaw 小时才主要生效。
                 "torques": -1e-5,  # 保持能耗正则，防止靠极端力矩过障。
                 "dof_vel": -5e-5,  # 比 stage0 更弱的腿部速度惩罚，给越障动作留自由度。
                 "dof_acc": -1e-7,  # 比 stage0 更弱的加速度惩罚，减少对快速调整的限制。
                 "action_rate": -0.005,  # 比 stage0 更弱的 action 平滑惩罚，允许越障时快速修正。
-                "dof_pos_limits": -0.5,  # 保留限位保护，但弱于 stage0 以允许大幅姿态变化。
-                "hip_action_l2": -0.05,  # 轻惩罚髋关节大动作，避免越障时过度外摆。
-                "stand_still": 0.0,  # 关闭低速站立惩罚，避免与持续路点推进目标冲突。
-                "collision": -0.3,  # 碰撞惩罚弱于 stage0，避免越障探索被过早压死。
-                "termination": -0.8,  # 失败终止惩罚保持不变。
+                "dof_pos_limits": -0.9,  # 保留限位保护，避免越障时进入不可恢复姿态。
+                "hip_action_l2": -0.02,  # 轻惩罚髋关节大动作，避免越障时过度外摆。
+                "stand_still": -0.005,  # 低速命令下仍保留很弱的默认姿态约束。
+                "collision": -0.5,  # 保持安全约束，避免躯干/腿部碰撞成为过障策略。
+                "termination": -1.5,  # 增强失败终止惩罚，stage2 更明确区分摔倒/成功结束。
             },
             "params": {
-                "reward_align_stage2": True,  # 启用路点距离差分和一次性完成事件缓存。
-                "use_delta_goal_progress": True,  # 允许 `_reward_goal_progress_delta` 输出正向距离进展。
-                "goal_progress_delta_max": 1.0,  # 限制单步距离差分上界，防止 reset/瞬移造成异常大奖励。
+                "reward_align_stage2": False,  # 新的 goal_delta_progress 自己维护距离进展缓存。
+                "use_delta_goal_progress": False,  # 关闭旧 goal_progress_delta，避免重复推进奖励。
+                "success_bonus_once": True,  # goal_bonus 使用现有 waypoint event buffer，保持一次性发放。
+                "goal_progress_delta_max": 1.0,  # 限制距离进展速度奖励上界。
                 "min_goal_speed": 0.15,  # 移动命令下 reward 目标速度下限，避免慢挪刷进展。
                 "max_goal_speed": 4.0,  # reward 目标速度上限，与连续速度课程目标一致。
+                "min_progress_speed": 0.05,  # 低于该目标方向速度时认为轮子空转无有效进展。
                 "stop_cmd_threshold": 0.05,  # 命令速度低于该值时视为停止，轮子驱动/空转项也按停止处理。
                 "final_goal_bonus": 5.0,  # 到达最终路点时在 goal_bonus 基础上追加的一次性奖励。
                 "obstacle_height_offset": 0.06,  # 前方检测到障碍时提高基座高度目标，辅助上障碍。
                 "obstacle_height_threshold": 0.04,  # 前方高度升高超过该值判定为 step/wall 类障碍。
                 "gap_height_threshold": 0.06,  # 前方高度下降超过该值判定为 gap 类障碍。
                 "wheel_clearance_target": 0.10,  # stage2 轮子越障离地目标高度，高于基础阶段默认值。
+                "wheel_clearance_margin": 0.04,  # 轮心目标高度 = 地形高度 + 轮半径 + margin。
+                "contact_force_thresh": 1.0,  # 轮子接触判定阈值；clearance 只作用于非接触轮。
                 "only_positive_rewards": False,  # 保留负奖励，确保滑移/碰撞/空转等约束真实生效。
             },
         },
@@ -253,6 +265,7 @@ class TaskRegistry():
             "scales": {
                 "goal_progress": 2.0,
                 "goal_progress_delta": 0.0,
+                "goal_delta_progress": 0.0,
                 "tracking_delta_yaw": 0.8,
                 "goal_bonus": 1.5,
                 "stand_still": -0.01,

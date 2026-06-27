@@ -166,12 +166,17 @@ class GO2WRoughCfg(LeggedRobotCfg):
         wheel_acc_weight = 0.2
         wheel_action_rate_weight = 0.5
         wheel_clearance_target = 0.10
+        wheel_clearance_margin = 0.04
+        contact_force_thresh = 1.0
         obstacle_height_offset = 0.06
         wheel_spin_progress_threshold = 0.05
+        min_progress_speed = 0.05
         min_goal_speed = 0.2
         max_goal_speed = 0.8
         stop_cmd_threshold = 0.05
         final_goal_bonus = 5.0
+        goal_dist_thresh = 0.3
+        goal_yaw_thresh = 0.4
         obstacle_height_threshold = 0.06
         gap_height_threshold = 0.06
         obstacle_probe_distances = [0.25, 0.40, 0.55, 0.70]
@@ -184,7 +189,7 @@ class GO2WRoughCfg(LeggedRobotCfg):
         fixed_goal_speed = 0.4
         reward_align_stage2 = False
         use_delta_goal_progress = False
-        success_bonus_once = False
+        success_bonus_once = True
         use_time_penalty = False
         reduce_alive_reward_stage2 = False
         log_reward_terms_detail = False
@@ -198,9 +203,11 @@ class GO2WRoughCfg(LeggedRobotCfg):
 
         class scales:
             termination = -0.8
-            goal_progress = 2.0
-            tracking_delta_yaw = 0.5
-            goal_bonus = 0.0
+            goal_progress = 1.0
+            goal_delta_progress = 2.0
+            tracking_delta_yaw = 1.0
+            delta_yaw_progress = 0.5
+            goal_bonus = 3.0
             lin_vel_z = -2.0
             ang_vel_xy = -0.05
             orientation = -1.0
@@ -217,7 +224,7 @@ class GO2WRoughCfg(LeggedRobotCfg):
             collision = -0.5
             wheel_clearance = 0.0
             wheel_climb_drive = 0.0
-            wheel_spin_without_progress = 0.0
+            wheel_spin_without_progress = -1e-4
 
 
 class GO2WRoughCfgPPO(LeggedRobotCfgPPO):
