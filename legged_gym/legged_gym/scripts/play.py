@@ -30,15 +30,61 @@
 
 from legged_gym import LEGGED_GYM_ROOT_DIR
 import os
+import json
 
 import isaacgym
 from legged_gym.envs import *
 from legged_gym.utils.cuda_compat import check_cuda_runtime_compat
-from legged_gym.utils import  get_args, export_policy_as_jit, task_registry, Logger
+from legged_gym.utils import  get_args, get_load_path, export_policy_as_jit, task_registry, Logger
 from legged_gym.utils import webviewer
 
 import numpy as np
 import torch
+
+
+def _metadata_to_network_profile(metadata):
+    network = metadata.get("network", {})
+    if not network:
+        network = metadata.get("model", {}).get("network_config", {})
+    split_head = bool(network.get("split_action_head", False))
+    latent = network.get("estimator_num_latent", None)
+    if latent == 32 and split_head:
+        return "e0_e3_e5_merge"
+    if latent == 32:
+        return "e3"
+    if split_head:
+        return "e0_e5_merge"
+    return "e0"
+
+
+def _infer_play_metadata(args, train_cfg):
+    experiment_name = args.experiment_name or train_cfg.runner.experiment_name
+    log_root = os.path.join(LEGGED_GYM_ROOT_DIR, "logs", experiment_name)
+    load_run = args.load_run if args.load_run is not None else train_cfg.runner.load_run
+    checkpoint = args.checkpoint if args.checkpoint is not None else train_cfg.runner.checkpoint
+    try:
+        load_path = get_load_path(log_root, load_run=load_run, checkpoint=checkpoint)
+    except Exception as exc:
+        print(f"[play metadata] Could not infer metadata path: {exc}")
+        return
+
+    metadata_path = os.path.join(os.path.dirname(load_path), "metadata", "train_metadata.json")
+    if not os.path.isfile(metadata_path):
+        print(f"[play metadata] Metadata not found: {metadata_path}")
+        return
+
+    with open(metadata_path, "r", encoding="utf-8") as handle:
+        metadata = json.load(handle)
+
+    observations = metadata.get("observations", {})
+    history_len = observations.get("history_len")
+    if getattr(args, "history_len", None) is None and history_len is not None:
+        args.history_len = int(history_len)
+        print(f"[play metadata] Inferred history_len={args.history_len} from {metadata_path}")
+
+    if getattr(args, "network_profile", "e0") == "e0":
+        args.network_profile = _metadata_to_network_profile(metadata)
+        print(f"[play metadata] Inferred network_profile={args.network_profile} from {metadata_path}")
 
 
 def _sample_play_x_commands(env, x_range):
@@ -77,6 +123,7 @@ def _sync_play_command_obs(env):
 def play(args, x_vel=1.0, y_vel=0.0, delta_yaw=0.0, x_vel_range=(1.0, 3.0)):
     check_cuda_runtime_compat()
     env_cfg, train_cfg = task_registry.get_cfgs(name=args.task)
+    _infer_play_metadata(args, train_cfg)
     # override some parameters for testing
     env_cfg.env.num_envs = min(env_cfg.env.num_envs, 50)
     env_cfg.terrain.num_rows = 10

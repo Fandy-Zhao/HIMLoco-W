@@ -131,6 +131,8 @@ def update_cfg_from_args(env_cfg, cfg_train, args):
         # num envs
         if args.num_envs is not None:
             env_cfg.env.num_envs = args.num_envs
+        if getattr(args, "history_len", None) is not None:
+            env_cfg.env.num_observations = env_cfg.env.num_one_step_observations * args.history_len
         if args.seed is not None:
             env_cfg.seed = args.seed
     if cfg_train is not None:
@@ -171,6 +173,7 @@ def get_args():
         {"name": "--max_iterations", "type": int, "help": "Maximum number of training iterations. Overrides config file if provided."},
         {"name": "--save_interval", "type": int, "default": None, "help": "Checkpoint interval in policy iterations."},
         {"name": "--network_profile", "type": str, "default": "e0", "help": "GO2W policy structure: e0 or e0_e5_merge."},
+        {"name": "--history_len", "type": int, "default": None, "help": "Actor observation history length. Overrides env.num_observations = num_one_step_observations * history_len."},
         {"name": "--web", "action": "store_true", "default": False, "help": "Use web viewer for headless rendering"},
         {"name": "--stage", "type": int, "default": None, "help": "Parkour curriculum stage. Overrides supported terrain and training config fields if provided."},
         {"name": "--eval_episodes", "type": int, "default": 256, "help": "Number of completed episodes for goal-health evaluation."},
