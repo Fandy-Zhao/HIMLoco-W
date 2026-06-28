@@ -204,7 +204,10 @@ def get_model_metadata(actor_critic):
 
     parameter_counts = count_parameters(actor_critic)
     modules = {}
-    for name in ["actor", "critic", "estimator", "adaptation_module", "history_encoder", "priv_encoder", "target"]:
+    for name in [
+        "actor", "actor_body", "leg_head", "wheel_head", "critic", "estimator",
+        "adaptation_module", "history_encoder", "priv_encoder", "target",
+    ]:
         module = getattr(actor_critic, name, None)
         if module is not None:
             modules[name] = str(module)
@@ -217,6 +220,10 @@ def get_model_metadata(actor_critic):
         "history_size": int(getattr(actor_critic, "history_size", 0)) if hasattr(actor_critic, "history_size") else None,
         "num_actor_obs": int(getattr(actor_critic, "num_actor_obs", 0)) if hasattr(actor_critic, "num_actor_obs") else None,
         "num_one_step_obs": int(getattr(actor_critic, "num_one_step_obs", 0)) if hasattr(actor_critic, "num_one_step_obs") else None,
+        "split_action_head": bool(getattr(actor_critic, "split_action_head", False)),
+        "actor_body_linear_layers": _linear_dims(getattr(actor_critic, "actor_body", None)),
+        "leg_head_linear_layers": _linear_dims(getattr(actor_critic, "leg_head", None)),
+        "wheel_head_linear_layers": _linear_dims(getattr(actor_critic, "wheel_head", None)),
     }
     estimator = getattr(actor_critic, "estimator", None)
     if estimator is not None:

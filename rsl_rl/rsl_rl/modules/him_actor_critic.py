@@ -81,6 +81,13 @@ class HIMActorCritic(nn.Module):
                         critic_hidden_dims=[512, 256, 128],
                         activation='elu',
                         init_noise_std=1.0,
+                        estimator_enc_hidden_dims=None,
+                        estimator_target_hidden_dims=None,
+                        estimator_num_latent=None,
+                        split_action_head=False,
+                        actor_head_hidden_dims=None,
+                        wheel_dof_indices=None,
+                        leg_dof_indices=None,
                         **kwargs):
         if kwargs:
             print("ActorCritic.__init__ got unexpected arguments, which will be ignored: " + str([key for key in kwargs.keys()]))
@@ -92,25 +99,61 @@ class HIMActorCritic(nn.Module):
         self.num_actor_obs = num_actor_obs
         self.num_actions = num_actions
         self.num_one_step_obs = num_one_step_obs
+        self.split_action_head = bool(split_action_head)
 
-        mlp_input_dim_a = num_one_step_obs + 3 + 16
+        wheel_dof_indices = list(wheel_dof_indices or [])
+        if leg_dof_indices is None:
+            leg_dof_indices = [index for index in range(num_actions) if index not in wheel_dof_indices]
+        self.register_buffer("wheel_dof_indices", torch.as_tensor(wheel_dof_indices, dtype=torch.long), persistent=False)
+        self.register_buffer("leg_dof_indices", torch.as_tensor(list(leg_dof_indices), dtype=torch.long), persistent=False)
+
+        estimator_enc_hidden_dims = list(estimator_enc_hidden_dims or [128, 64, 16])
+        if estimator_num_latent is not None:
+            estimator_enc_hidden_dims[-1] = int(estimator_num_latent)
+        estimator_target_hidden_dims = list(estimator_target_hidden_dims or [128, 64])
+
+        mlp_input_dim_a = num_one_step_obs + 3 + estimator_enc_hidden_dims[-1]
         mlp_input_dim_c = num_critic_obs
 
         # Estimator
-        self.estimator = HIMEstimator(temporal_steps=self.history_size, num_one_step_obs=num_one_step_obs)
+        self.estimator = HIMEstimator(
+            temporal_steps=self.history_size,
+            num_one_step_obs=num_one_step_obs,
+            enc_hidden_dims=estimator_enc_hidden_dims,
+            tar_hidden_dims=estimator_target_hidden_dims,
+            activation=activation.__class__.__name__.lower(),
+        )
 
-        # Policy
-        actor_layers = []
-        actor_layers.append(nn.Linear(mlp_input_dim_a, actor_hidden_dims[0]))
-        actor_layers.append(activation)
-        for l in range(len(actor_hidden_dims)):
-            if l == len(actor_hidden_dims) - 1:
-                actor_layers.append(nn.Linear(actor_hidden_dims[l], num_actions))
-                # actor_layers.append(nn.Tanh())
-            else:
-                actor_layers.append(nn.Linear(actor_hidden_dims[l], actor_hidden_dims[l + 1]))
-                actor_layers.append(activation)
-        self.actor = nn.Sequential(*actor_layers)
+        if self.split_action_head:
+            if not actor_hidden_dims:
+                raise ValueError("actor_hidden_dims must not be empty when split_action_head is enabled")
+            if self.wheel_dof_indices.numel() == 0 or self.leg_dof_indices.numel() == 0:
+                raise ValueError("split_action_head requires non-empty leg and wheel action indices")
+            actor_body_layers = [nn.Linear(mlp_input_dim_a, actor_hidden_dims[0]), activation]
+            for l in range(len(actor_hidden_dims) - 1):
+                actor_body_layers.append(nn.Linear(actor_hidden_dims[l], actor_hidden_dims[l + 1]))
+                actor_body_layers.append(get_activation(activation.__class__.__name__.lower()))
+            self.actor = None
+            self.actor_body = nn.Sequential(*actor_body_layers)
+            head_hidden_dims = list(actor_head_hidden_dims or [])
+            self.leg_head = self._build_action_head(
+                actor_hidden_dims[-1], head_hidden_dims, self.leg_dof_indices.numel(), activation
+            )
+            self.wheel_head = self._build_action_head(
+                actor_hidden_dims[-1], head_hidden_dims, self.wheel_dof_indices.numel(), activation
+            )
+        else:
+            actor_layers = [nn.Linear(mlp_input_dim_a, actor_hidden_dims[0]), activation]
+            for l in range(len(actor_hidden_dims)):
+                if l == len(actor_hidden_dims) - 1:
+                    actor_layers.append(nn.Linear(actor_hidden_dims[l], num_actions))
+                else:
+                    actor_layers.append(nn.Linear(actor_hidden_dims[l], actor_hidden_dims[l + 1]))
+                    actor_layers.append(get_activation(activation.__class__.__name__.lower()))
+            self.actor = nn.Sequential(*actor_layers)
+            self.actor_body = None
+            self.leg_head = None
+            self.wheel_head = None
 
         # Value function
         critic_layers = []
@@ -124,7 +167,10 @@ class HIMActorCritic(nn.Module):
                 critic_layers.append(activation)
         self.critic = nn.Sequential(*critic_layers)
 
-        print(f"Actor MLP: {self.actor}")
+        print(f"Actor MLP: {self.actor if self.actor is not None else self.actor_body}")
+        if self.split_action_head:
+            print(f"Leg head: {self.leg_head}")
+            print(f"Wheel head: {self.wheel_head}")
         print(f"Critic MLP: {self.critic}")
         print(f'Estimator: {self.estimator.encoder}')
 
@@ -142,7 +188,31 @@ class HIMActorCritic(nn.Module):
     # not used at the moment
     def init_weights(sequential, scales):
         [torch.nn.init.orthogonal_(module.weight, gain=scales[idx]) for idx, module in
-         enumerate(mod for mod in sequential if isinstance(mod, nn.Linear))]
+                         enumerate(mod for mod in sequential if isinstance(mod, nn.Linear))]
+
+    @staticmethod
+    def _build_action_head(input_dim, hidden_dims, output_dim, activation):
+        layers = []
+        last_dim = input_dim
+        for hidden_dim in hidden_dims:
+            layers.append(nn.Linear(last_dim, hidden_dim))
+            layers.append(get_activation(activation.__class__.__name__.lower()))
+            last_dim = hidden_dim
+        layers.append(nn.Linear(last_dim, output_dim))
+        return nn.Sequential(*layers)
+
+    def _actor_forward(self, actor_input):
+        if not self.split_action_head:
+            return self.actor(actor_input)
+        trunk_latent = self.actor_body(actor_input)
+        action_mean = torch.zeros(
+            actor_input.shape[0], self.num_actions, device=actor_input.device, dtype=actor_input.dtype
+        )
+        leg_indices = self.leg_dof_indices.to(actor_input.device)
+        wheel_indices = self.wheel_dof_indices.to(actor_input.device)
+        action_mean[:, leg_indices] = self.leg_head(trunk_latent)
+        action_mean[:, wheel_indices] = self.wheel_head(trunk_latent)
+        return action_mean
 
 
     def reset(self, dones=None):
@@ -167,7 +237,7 @@ class HIMActorCritic(nn.Module):
         with torch.no_grad():
             vel, latent = self.estimator(obs_history)
         actor_input = torch.cat((obs_history[:,:self.num_one_step_obs], vel, latent), dim=-1)
-        mean = self.actor(actor_input)
+        mean = self._actor_forward(actor_input)
         self.distribution = Normal(mean, mean*0. + self.std)
 
     def act(self, obs_history=None, **kwargs):
@@ -179,7 +249,7 @@ class HIMActorCritic(nn.Module):
 
     def act_inference(self, obs_history, observations=None):
         vel, latent = self.estimator(obs_history)
-        actions_mean = self.actor(torch.cat((obs_history[:,:self.num_one_step_obs], vel, latent), dim=-1))
+        actions_mean = self._actor_forward(torch.cat((obs_history[:,:self.num_one_step_obs], vel, latent), dim=-1))
         return actions_mean
 
     def evaluate(self, critic_observations, **kwargs):

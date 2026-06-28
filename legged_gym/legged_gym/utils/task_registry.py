@@ -196,7 +196,7 @@ class TaskRegistry():
                 "success_bonus_once": True,  # goal_bonus 使用现有 waypoint event buffer，保持一次性发放。
                 "goal_progress_delta_max": 1.0,  # 限制距离进展速度奖励上界。
                 "min_goal_speed": 0.0,  # 允许低速/静止命令，适合基础跟踪预训练。
-                "max_goal_speed": 2.0,  # 限制 reward 中目标速度上界，低于命令采样最大值以稳定早期训练。
+                "max_goal_speed": 3.0,  # 与 stage0 命令采样上限一致，确保 2-3 m/s 命令得到正确跟踪目标。
                 "min_progress_speed": 0.05,  # 低于该目标方向速度时认为轮子空转无有效进展。
                 "stop_cmd_threshold": 0.05,  # 命令速度低于该值时按停止目标处理。
                 "final_goal_bonus": 0.0,  # 关闭最终路点额外奖励。
@@ -493,6 +493,28 @@ class TaskRegistry():
         _, train_cfg = update_cfg_from_args(None, train_cfg, args)
         if getattr(args, "stage", None) is not None:
             _, train_cfg = self.set_stage(None, train_cfg, args)
+
+        network_profile = getattr(args, "network_profile", "e0")
+        network_profiles = {
+            "e0": ([128, 64, 16], [128, 64], False),
+            "e0_e5_merge": ([128, 64, 16], [128, 64], True),
+            "e3": ([256, 128, 32], [256, 128], False),
+            "e0_e3_e5_merge": ([256, 128, 32], [256, 128], True),
+        }
+        if network_profile not in network_profiles:
+            raise ValueError(f"Unsupported network profile: {network_profile}")
+        estimator_dims, target_dims, split_action_head = network_profiles[network_profile]
+        train_cfg.policy.estimator_enc_hidden_dims = list(estimator_dims)
+        train_cfg.policy.estimator_target_hidden_dims = list(target_dims)
+        train_cfg.policy.estimator_num_latent = estimator_dims[-1]
+        train_cfg.policy.split_action_head = split_action_head
+        if train_cfg.policy.split_action_head:
+            train_cfg.policy.wheel_dof_indices = env.wheel_dof_indices.detach().cpu().tolist()
+            train_cfg.policy.leg_dof_indices = env.leg_dof_indices.detach().cpu().tolist()
+        else:
+            train_cfg.policy.wheel_dof_indices = []
+            train_cfg.policy.leg_dof_indices = list(range(env.num_actions))
+        print(f"Using GO2W network profile: {network_profile}")
 
         run_name = train_cfg.runner.run_name if train_cfg.runner.run_name else 'default'
         if log_root=="default":

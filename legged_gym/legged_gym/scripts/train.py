@@ -30,6 +30,7 @@
 
 import numpy as np
 import os
+import signal
 from datetime import datetime
 
 import isaacgym
@@ -52,7 +53,19 @@ def train(args, headless=True):
         actor_critic=getattr(ppo_runner.alg, "actor_critic", None),
         log_dir=getattr(ppo_runner, "log_dir", None),
     )
-    ppo_runner.learn(num_learning_iterations=train_cfg.runner.max_iterations, init_at_random_ep_len=True)
+    def request_checkpoint_and_stop(signum, frame):
+        raise KeyboardInterrupt(f"received signal {signum}")
+
+    signal.signal(signal.SIGTERM, request_checkpoint_and_stop)
+    try:
+        ppo_runner.learn(num_learning_iterations=train_cfg.runner.max_iterations, init_at_random_ep_len=True)
+    except KeyboardInterrupt as exc:
+        iteration = int(getattr(ppo_runner, "current_learning_iteration", 0))
+        checkpoint_path = os.path.join(ppo_runner.log_dir, f"model_{iteration}.pt")
+        print(f"[graceful-stop] {exc}; saving {checkpoint_path}", flush=True)
+        ppo_runner.save(checkpoint_path)
+        if getattr(ppo_runner, "writer", None) is not None:
+            ppo_runner.writer.flush()
 
 if __name__ == '__main__':
     args = get_args()

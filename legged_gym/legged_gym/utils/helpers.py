@@ -149,6 +149,8 @@ def update_cfg_from_args(env_cfg, cfg_train, args):
             cfg_train.runner.load_run = args.load_run
         if args.checkpoint is not None:
             cfg_train.runner.checkpoint = args.checkpoint
+        if getattr(args, "save_interval", None) is not None:
+            cfg_train.runner.save_interval = args.save_interval
 
     return env_cfg, cfg_train
 
@@ -167,6 +169,8 @@ def get_args():
         {"name": "--num_envs", "type": int, "help": "Number of environments to create. Overrides config file if provided."},
         {"name": "--seed", "type": int, "help": "Random seed. Overrides config file if provided."},
         {"name": "--max_iterations", "type": int, "help": "Maximum number of training iterations. Overrides config file if provided."},
+        {"name": "--save_interval", "type": int, "default": None, "help": "Checkpoint interval in policy iterations."},
+        {"name": "--network_profile", "type": str, "default": "e0", "help": "GO2W policy structure: e0 or e0_e5_merge."},
         {"name": "--web", "action": "store_true", "default": False, "help": "Use web viewer for headless rendering"},
         {"name": "--stage", "type": int, "default": None, "help": "Parkour curriculum stage. Overrides supported terrain and training config fields if provided."},
         {"name": "--eval_episodes", "type": int, "default": 256, "help": "Number of completed episodes for goal-health evaluation."},
@@ -231,14 +235,39 @@ def export_policy_as_jit(actor_critic, path):
 class PolicyExporterHIM(torch.nn.Module):
     def __init__(self, actor_critic):
         super().__init__()
-        self.actor = copy.deepcopy(actor_critic.actor)
+        self.split_action_head = bool(getattr(actor_critic, "split_action_head", False))
+        self.num_one_step_obs = int(actor_critic.num_one_step_obs)
+        self.num_actions = int(actor_critic.num_actions)
         self.estimator = copy.deepcopy(actor_critic.estimator.encoder)
+        if self.split_action_head:
+            self.actor = torch.nn.Identity()
+            self.actor_body = copy.deepcopy(actor_critic.actor_body)
+            self.leg_head = copy.deepcopy(actor_critic.leg_head)
+            self.wheel_head = copy.deepcopy(actor_critic.wheel_head)
+            self.register_buffer("leg_dof_indices", actor_critic.leg_dof_indices.detach().cpu().clone())
+            self.register_buffer("wheel_dof_indices", actor_critic.wheel_dof_indices.detach().cpu().clone())
+        else:
+            self.actor = copy.deepcopy(actor_critic.actor)
+            self.actor_body = torch.nn.Identity()
+            self.leg_head = torch.nn.Identity()
+            self.wheel_head = torch.nn.Identity()
+            self.register_buffer("leg_dof_indices", torch.empty(0, dtype=torch.long))
+            self.register_buffer("wheel_dof_indices", torch.empty(0, dtype=torch.long))
 
     def forward(self, obs_history):
-        parts = self.estimator(obs_history)[:, 0:19]
+        parts = self.estimator(obs_history)
         vel, z = parts[..., :3], parts[..., 3:]
         z = F.normalize(z, dim=-1, p=2.0)
-        return self.actor(torch.cat((obs_history[:, 0:45], vel, z), dim=1))
+        actor_input = torch.cat((obs_history[:, :self.num_one_step_obs], vel, z), dim=1)
+        if not self.split_action_head:
+            return self.actor(actor_input)
+        trunk_latent = self.actor_body(actor_input)
+        actions = torch.zeros(
+            actor_input.shape[0], self.num_actions, dtype=actor_input.dtype, device=actor_input.device
+        )
+        actions.index_copy_(1, self.leg_dof_indices, self.leg_head(trunk_latent))
+        actions.index_copy_(1, self.wheel_dof_indices, self.wheel_head(trunk_latent))
+        return actions
 
     def export(self, path):
         os.makedirs(path, exist_ok=True)
