@@ -36,6 +36,7 @@ from legged_gym.envs.go1.go1_config import Go1RoughCfg, Go1RoughCfgPPO
 from legged_gym.envs.aliengo.aliengo_config import AlienGoRoughCfg, AlienGoRoughCfgPPO
 from legged_gym.envs.go2w.go2w_config import GO2WRoughCfg, GO2WRoughCfgPPO
 from legged_gym.envs.go2w.go2w_robot import Go2w
+from legged_gym.envs.hust_w.hust_w_config import HUSTWRoughCfg, HUSTWRoughCfgPPO
 
 import os
 
@@ -45,3 +46,4 @@ task_registry.register( "a1", LeggedRobot, A1RoughCfg(), A1RoughCfgPPO() )
 task_registry.register( "go1", LeggedRobot, Go1RoughCfg(), Go1RoughCfgPPO() )
 task_registry.register( "aliengo", LeggedRobot, AlienGoRoughCfg(), AlienGoRoughCfgPPO() )
 task_registry.register( "go2w", Go2w, GO2WRoughCfg(), GO2WRoughCfgPPO() )
+task_registry.register( "hust_w", Go2w, HUSTWRoughCfg(), HUSTWRoughCfgPPO() )
