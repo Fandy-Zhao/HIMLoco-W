@@ -232,28 +232,40 @@ class LeggedRobotCfg(BaseConfig):
         class scales:
             termination = -0.0
             tracking_lin_vel = 1.0
-            tracking_ang_vel = 0.5
+            tracking_ang_vel = 0.0  # Deprecated: commands[:, 2] is delta_yaw, not yaw rate
             lin_vel_z = -2.0
             ang_vel_xy = -0.05
             orientation = -0.
             torques = -0.00001
             dof_vel = -0.
             dof_acc = -2.5e-7
-            base_height = -0. 
+            base_height = -0.
             feet_air_time =  1.0
             collision = -1.
-            feet_stumble = -0.0 
+            feet_stumble = -0.0
             action_rate = -0.01
             stand_still = -0.
+            # Goal navigation (unified)
+            goal_progress = 0.
+            goal_delta_progress = 0.
+            tracking_delta_yaw = 0.
+            goal_bonus = 0.
+            # Legacy/removed: keep zero to avoid breaking old configs
             tracking_goal_vel = 0.
             tracking_goal_yaw = 0.
             reach_goal = 0.
             finish_course = 0.
+            success_bonus = 0.
+            early_success = 0.
+            time_penalty = 0.
             wheel_torque = 0.
             wheel_vel_smooth = 0.
+            smoothness = 0.
+            # Wheel-leg specific
             wheel_slip = 0.
             foot_clearance = 0.
             feet_clearance = 0.
+            delta_yaw_progress = 0.
 
         only_positive_rewards = True # if true negative total rewards are clipped at zero (avoids early termination problems)
         tracking_sigma = 0.25 # tracking reward = exp(-error^2/sigma)

@@ -169,6 +169,10 @@ class LeggedRobot(BaseTask):
         self.final_goal_reset_buf = self._check_final_goal_termination()
         self.reset_buf |= self.time_out_buf
         self.reset_buf |= self.final_goal_reset_buf
+        if self.cfg.terrain.measure_heights and bool(getattr(self.cfg.terrain, 'terminate_on_ground_contact', False)):
+            base_clearance = self._get_base_heights()
+            threshold = float(getattr(self.cfg.terrain, 'ground_contact_height_threshold', 0.16))
+            self.reset_buf |= base_clearance < threshold
 
     def reset_idx(self, env_ids):
         """ Reset some environments.
@@ -300,73 +304,66 @@ class LeggedRobot(BaseTask):
         if hasattr(self, '_finalize_goal_alignment_rewards'):
             self._finalize_goal_alignment_rewards()
     
-    def compute_observations(self):
-        """ Computes observations
+    def _compute_current_actor_obs(self):
+        """ Computes current actor observation (proprioceptive only, no privileged info).
+
+        Order: ang_vel → gravity → commands → dof_err → dof_vel → actions
         """
-        current_obs = torch.cat((   self._get_command_obs(),
-                                    self.base_ang_vel  * self.obs_scales.ang_vel,
-                                    self.projected_gravity,
-                                    (self.dof_pos - self.default_dof_pos) * self.obs_scales.dof_pos,
-                                    self.dof_vel * self.obs_scales.dof_vel,
-                                    self.actions
-                                    ),dim=-1)
-        # add noise if needed
+        dof_err = (self.dof_pos - self.default_dof_pos) * self.obs_scales.dof_pos
+        if hasattr(self, 'wheel_indices'):
+            dof_err[:, self.wheel_indices] = 0.
+        current_obs = torch.cat((
+            self.base_ang_vel * self.obs_scales.ang_vel,      # 3
+            self.projected_gravity,                           # 3
+            self._get_command_obs(),                          # 3
+            dof_err,                                          # num_actions
+            self.dof_vel * self.obs_scales.dof_vel,           # num_actions
+            self.actions,                                     # num_actions
+        ), dim=-1)
         if self.add_noise:
-            current_obs += (2 * torch.rand_like(current_obs) - 1) * self.noise_scale_vec[0:(9 + 3 * self.num_actions)]
+            current_obs += (2 * torch.rand_like(current_obs) - 1) * self.noise_scale_vec
+        return current_obs
 
-        # add perceptive inputs if not blind
-        current_obs = torch.cat((current_obs, self.base_lin_vel * self.obs_scales.lin_vel, self.disturbance[:, 0, :]), dim=-1)
+    def _compute_current_privileged_obs(self, current_obs=None):
+        """ Computes privileged observation (actor obs + privileged info).
+        Appends lin_vel, optionally disturbance and height measurements.
+        """
+        if current_obs is None:
+            current_obs = self._compute_current_actor_obs()
+        if self.cfg.domain_rand.disturbance:
+            current_obs = torch.cat((current_obs, self.base_lin_vel * self.obs_scales.lin_vel, self.disturbance[:, 0, :]), dim=-1)
+        else:
+            current_obs = torch.cat((current_obs, self.base_lin_vel * self.obs_scales.lin_vel), dim=-1)
         if self.cfg.terrain.measure_heights:
-            heights = torch.clip(self.root_states[:, 2].unsqueeze(1) - 0.5 - self.measured_heights, -1, 1.) * self.obs_scales.height_measurements 
-            heights += (2 * torch.rand_like(heights) - 1) * self.noise_scale_vec[(9 + 3 * self.num_actions):(9 + 3 * self.num_actions+187)]
+            heights = torch.clip(
+                self.root_states[:, 2].unsqueeze(1) - 0.5 - self.measured_heights,
+                -1, 1.,
+            ) * self.obs_scales.height_measurements
             current_obs = torch.cat((current_obs, heights), dim=-1)
+        return current_obs
 
-        self.obs_buf = torch.cat((current_obs[:, :self.num_one_step_obs], self.obs_buf[:, :-self.num_one_step_obs]), dim=-1)
-        self.privileged_obs_buf = torch.cat((current_obs[:, :self.num_one_step_privileged_obs], self.privileged_obs_buf[:, :-self.num_one_step_privileged_obs]), dim=-1)
+    def compute_observations(self):
+        """ Computes observations """
+        current_obs = self._compute_current_actor_obs()
+        current_priv_obs = self._compute_current_privileged_obs(current_obs)
+
+        self.obs_buf = torch.cat(
+            (current_obs, self.obs_buf[:, :-self.num_one_step_obs]),
+            dim=-1,
+        )
+
+        self.privileged_obs_buf = torch.cat(
+            (current_priv_obs, self.privileged_obs_buf[:, :-self.num_one_step_privileged_obs]),
+            dim=-1,
+        )
 
     def get_current_obs(self):
-        current_obs = torch.cat((   self._get_command_obs(),
-                                    self.base_ang_vel  * self.obs_scales.ang_vel,
-                                    self.projected_gravity,
-                                    (self.dof_pos - self.default_dof_pos) * self.obs_scales.dof_pos,
-                                    self.dof_vel * self.obs_scales.dof_vel,
-                                    self.actions
-                                    ),dim=-1)
-        # add noise if needed
-        if self.add_noise:
-            current_obs += (2 * torch.rand_like(current_obs) - 1) * self.noise_scale_vec[0:(9 + 3 * self.num_actions)]
+        return self._compute_current_privileged_obs()
 
-        # add perceptive inputs if not blind
-        current_obs = torch.cat((current_obs, self.base_lin_vel * self.obs_scales.lin_vel, self.disturbance[:, 0, :]), dim=-1)
-        if self.cfg.terrain.measure_heights:
-            heights = torch.clip(self.root_states[:, 2].unsqueeze(1) - 0.5 - self.measured_heights, -1, 1.) * self.obs_scales.height_measurements 
-            heights += (2 * torch.rand_like(heights) - 1) * self.noise_scale_vec[(9 + 3 * self.num_actions):(9 + 3 * self.num_actions+187)]
-            current_obs = torch.cat((current_obs, heights), dim=-1)
-
-        return current_obs
-        
     def compute_termination_observations(self, env_ids):
-        """ Computes observations
-        """
-        current_obs = torch.cat((   self._get_command_obs(),
-                                    self.base_ang_vel  * self.obs_scales.ang_vel,
-                                    self.projected_gravity,
-                                    (self.dof_pos - self.default_dof_pos) * self.obs_scales.dof_pos,
-                                    self.dof_vel * self.obs_scales.dof_vel,
-                                    self.actions
-                                    ),dim=-1)
-        # add noise if needed
-        if self.add_noise:
-            current_obs += (2 * torch.rand_like(current_obs) - 1) * self.noise_scale_vec[0:(9 + 3 * self.num_actions)]
-
-        # add perceptive inputs if not blind
-        current_obs = torch.cat((current_obs, self.base_lin_vel * self.obs_scales.lin_vel, self.disturbance[:, 0, :]), dim=-1)
-        if self.cfg.terrain.measure_heights:
-            heights = torch.clip(self.root_states[:, 2].unsqueeze(1) - 0.5 - self.measured_heights, -1, 1.) * self.obs_scales.height_measurements 
-            heights += (2 * torch.rand_like(heights) - 1) * self.noise_scale_vec[(9 + 3 * self.num_actions):(9 + 3 * self.num_actions+187)]
-            current_obs = torch.cat((current_obs, heights), dim=-1)
-
-        return torch.cat((current_obs[:, :self.num_one_step_privileged_obs], self.privileged_obs_buf[:, :-self.num_one_step_privileged_obs]), dim=-1)[env_ids]
+        """ Computes termination observations (privileged obs with history) """
+        priv_obs = self._compute_current_privileged_obs()
+        return torch.cat((priv_obs, self.privileged_obs_buf[:, :-self.num_one_step_privileged_obs]), dim=-1)[env_ids]
         
             
     def create_sim(self):
@@ -527,6 +524,18 @@ class LeggedRobot(BaseTask):
             mask |= self.env_terrain_idx == idx
         return mask
 
+    def _indices_from_names(self, all_names, names, label):
+        missing = [name for name in names if name not in all_names]
+        if missing:
+            raise RuntimeError(f'Missing {label} names {missing}. Available names: {all_names}')
+        return torch.tensor([all_names.index(name) for name in names], dtype=torch.long, device=self.device)
+
+    def _matching_names(self, all_names, patterns):
+        matched = []
+        for pattern in patterns:
+            matched.extend([name for name in all_names if pattern in name])
+        return matched
+
     def _get_base_yaw(self):
         forward = quat_apply(self.base_quat, self.forward_vec)
         return torch.atan2(forward[:, 1], forward[:, 0])
@@ -685,19 +694,39 @@ class LeggedRobot(BaseTask):
         cur_goal = self.env_goals[env_ids, self.cur_goal_idx[env_ids]]
         return torch.norm(self.root_states[env_ids, :2] - cur_goal[:, :2], dim=1)
 
+    def _goal_alignment_active(self):
+        if not hasattr(self, 'env_goals') or not hasattr(self, 'cur_goal_idx'):
+            return False
+        if not hasattr(self, 'prev_goal_dist') or not hasattr(self, 'curr_goal_dist'):
+            return False
+        if hasattr(self, 'env_has_goals') and not torch.any(self.env_has_goals):
+            return False
+        return True
+
     def _prepare_goal_alignment_rewards(self):
         if hasattr(self, 'goal_success_event') and hasattr(self, 'final_goal_event'):
             self.goal_success_event[:] = self.final_goal_event
-        if not bool(getattr(self.cfg.rewards, 'reward_align_stage2', False)):
+
+        if not self._goal_alignment_active():
             return
+
         self.curr_goal_dist[:] = self._compute_goal_distance()
         max_delta = float(getattr(self.cfg.rewards, 'goal_progress_delta_max', 1.0))
-        self.goal_progress_delta_raw[:] = torch.clamp(self.prev_goal_dist - self.curr_goal_dist, -max_delta, max_delta)
+        self.goal_progress_delta_raw[:] = torch.clamp(
+            self.prev_goal_dist - self.curr_goal_dist,
+            -max_delta,
+            max_delta,
+        )
+        if hasattr(self, 'env_has_goals'):
+            self.goal_progress_delta_raw[~self.env_has_goals] = 0.0
 
     def _finalize_goal_alignment_rewards(self):
-        if not bool(getattr(self.cfg.rewards, 'reward_align_stage2', False)):
+        if not self._goal_alignment_active():
             return
-        if hasattr(self, 'curr_goal_dist') and hasattr(self, 'prev_goal_dist'):
+
+        if hasattr(self, 'env_has_goals'):
+            self.prev_goal_dist[self.env_has_goals] = self.curr_goal_dist[self.env_has_goals]
+        else:
             self.prev_goal_dist[:] = self.curr_goal_dist
 
     def _apply_continuous_speed_curriculum_limit(self):
@@ -839,40 +868,60 @@ class LeggedRobot(BaseTask):
 
     def _compute_torques(self, actions):
         """ Compute torques from actions.
-            Actions can be interpreted as position or velocity targets given to a PD controller, or directly as scaled torques.
-            [NOTE]: torques must have the same dimension as the number of DOFs, even if some DOFs are not actuated.
-
-        Args:
-            actions (torch.Tensor): Actions
-
-        Returns:
-            [torch.Tensor]: Torques sent to the simulation
+            For wheeled robots: position PD for legs, velocity PD for wheels.
+            For pure legged robots: position PD for all DOFs.
         """
-        #pd controller
         actions_scaled = actions * self.cfg.control.action_scale
-        actions_scaled[:, [0, 3, 6, 9]] *=self.cfg.control.hip_reduction
-        self.joint_pos_target = self.default_dof_pos + actions_scaled
 
-        control_type = self.cfg.control.control_type
-        if control_type=="P":
-            torques = self.p_gains * self.Kp_factors * (self.joint_pos_target - self.dof_pos) - self.d_gains * self.Kd_factors * self.dof_vel
-        elif control_type=="V":
-            torques = self.p_gains*(actions_scaled - self.dof_vel) - self.d_gains*(self.dof_vel - self.last_dof_vel)/self.sim_params.dt
-        elif control_type=="T":
-            torques = actions_scaled
+        if hasattr(self, 'wheel_indices'):
+            dof_err = self.default_dof_pos - self.dof_pos
+            dof_err[:, self.wheel_indices] = 0.
+            actions_scaled[:, self.wheel_indices] = 0.
+            vel_ref = torch.zeros_like(actions_scaled)
+            vel_ref[:, self.wheel_indices] = (actions * self.cfg.control.vel_scale)[:, self.wheel_indices]
+
+            control_type = self.cfg.control.control_type
+            if control_type == 'P':
+                torques = (
+                    self.p_gains * self.Kp_factors * (actions_scaled + dof_err)
+                    + self.d_gains * self.Kd_factors * (vel_ref - self.dof_vel)
+                )
+            elif control_type == 'V':
+                torques = self.p_gains * (actions_scaled - self.dof_vel) - self.d_gains * (self.dof_vel - self.last_dof_vel) / self.sim_params.dt
+            elif control_type == 'T':
+                torques = actions_scaled
+            else:
+                raise NameError(f'Unknown controller type: {control_type}')
         else:
-            raise NameError(f"Unknown controller type: {control_type}")
+            actions_scaled[:, [0, 3, 6, 9]] *= self.cfg.control.hip_reduction
+            self.joint_pos_target = self.default_dof_pos + actions_scaled
+
+            control_type = self.cfg.control.control_type
+            if control_type == "P":
+                torques = self.p_gains * self.Kp_factors * (self.joint_pos_target - self.dof_pos) - self.d_gains * self.Kd_factors * self.dof_vel
+            elif control_type == "V":
+                torques = self.p_gains * (actions_scaled - self.dof_vel) - self.d_gains * (self.dof_vel - self.last_dof_vel) / self.sim_params.dt
+            elif control_type == "T":
+                torques = actions_scaled
+            else:
+                raise NameError(f"Unknown controller type: {control_type}")
         return torch.clip(torques, -self.torque_limits, self.torque_limits)
 
     def _reset_dofs(self, env_ids):
         """ Resets DOF position and velocities of selected environmments
-        Positions are randomly selected within 0.5:1.5 x default positions.
+        Positions are randomly selected within 0.5:1.5 x default positions (or default only when configured).
         Velocities are set to zero.
 
         Args:
             env_ids (List[int]): Environemnt ids
         """
-        self.dof_pos[env_ids] = self.default_dof_pos * torch_rand_float(0.5, 1.5, (len(env_ids), self.num_dof), device=self.device)
+        if bool(getattr(self.cfg.init_state, 'reset_to_default_pos', False)):
+            self.dof_pos[env_ids] = self.init_dof_pos
+        else:
+            rng = self.cfg.domain_rand.initial_joint_pos_range
+            self.dof_pos[env_ids] = self.default_dof_pos * torch_rand_float(
+                rng[0], rng[1], (len(env_ids), self.num_dof), device=self.device
+            )
         self.dof_vel[env_ids] = 0.
 
         env_ids_int32 = env_ids.to(dtype=torch.int32)
@@ -996,32 +1045,19 @@ class LeggedRobot(BaseTask):
 
 
     def _get_noise_scale_vec(self, cfg):
-        """ Sets a vector used to scale the noise added to the observations.
-            [NOTE]: Must be adapted when changing the observations structure
-
-        Args:
-            cfg (Dict): Environment config file
-
-        Returns:
-            [torch.Tensor]: Vector of scales used to multiply a uniform distribution in [-1, 1]
+        """ Sets a vector used to scale the noise added to actor observations.
+            Matches order: ang_vel(3) → gravity(3) → commands(3) → dof_err(N) → dof_vel(N) → actions(N)
         """
-        # noise_vec = torch.zeros_like(self.obs_buf[0])\
-        if self.cfg.terrain.measure_heights:
-            noise_vec = torch.zeros(9 + 3*self.num_actions + 187, device=self.device)
-        else:
-            noise_vec = torch.zeros(9 + 3*self.num_actions, device=self.device)
+        noise_vec = torch.zeros(self.cfg.env.num_one_step_observations, device=self.device)
         self.add_noise = self.cfg.noise.add_noise
         noise_scales = self.cfg.noise.noise_scales
         noise_level = self.cfg.noise.noise_level
-        noise_vec[0:3] = 0. # commands
-        noise_vec[3:6] = noise_scales.ang_vel * noise_level * self.obs_scales.ang_vel
-        noise_vec[6:9] = noise_scales.gravity * noise_level
+        noise_vec[0:3] = noise_scales.ang_vel * noise_level * self.obs_scales.ang_vel
+        noise_vec[3:6] = noise_scales.gravity * noise_level
+        noise_vec[6:9] = 0.  # commands: no noise
         noise_vec[9:(9 + self.num_actions)] = noise_scales.dof_pos * noise_level * self.obs_scales.dof_pos
         noise_vec[(9 + self.num_actions):(9 + 2 * self.num_actions)] = noise_scales.dof_vel * noise_level * self.obs_scales.dof_vel
-        noise_vec[(9 + 2 * self.num_actions):(9 + 3 * self.num_actions)] = 0. # previous actions
-        if self.cfg.terrain.measure_heights:
-            noise_vec[(9 + 3 * self.num_actions):(9 + 3 * self.num_actions + 187)] = noise_scales.height_measurements* noise_level * self.obs_scales.height_measurements
-        #noise_vec[232:] = 0
+        noise_vec[(9 + 2 * self.num_actions):(9 + 3 * self.num_actions)] = 0.  # actions: no noise
         return noise_vec
 
     #----------------------------------------
@@ -1123,6 +1159,9 @@ class LeggedRobot(BaseTask):
         #store friction and restitution
         self.friction_coeffs = torch.ones(self.num_envs, 1, dtype=torch.float, device=self.device, requires_grad=False)
         self.restitution_coeffs = torch.zeros(self.num_envs, 1, dtype=torch.float, device=self.device, requires_grad=False)
+
+        # store default DOF positions for reset (used by subclasses)
+        self.init_dof_pos = self.default_dof_pos.clone()
 
 
     def _prepare_reward_function(self):
@@ -1309,7 +1348,63 @@ class LeggedRobot(BaseTask):
         self.termination_contact_indices = torch.zeros(len(termination_contact_names), dtype=torch.long, device=self.device, requires_grad=False)
         for i in range(len(termination_contact_names)):
             self.termination_contact_indices[i] = self.gym.find_actor_rigid_body_handle(self.envs[0], self.actor_handles[0], termination_contact_names[i])
-            
+
+        # --- Auto-detect wheel DOFs and bodies ---
+        wheel_names = list(getattr(self.cfg.asset, 'wheel_dof_names', []) or [])
+        if not wheel_names:
+            wheel_patterns = getattr(self.cfg.asset, 'wheel_name', None)
+            if wheel_patterns:
+                wheel_patterns = wheel_patterns if isinstance(wheel_patterns, list) else [wheel_patterns]
+                wheel_names = self._matching_names(self.dof_names, wheel_patterns)
+        if wheel_names:
+            self.wheel_dof_names = wheel_names
+            self.wheel_indices = self._indices_from_names(self.dof_names, wheel_names, 'wheel DOF')
+            self.wheel_dof_indices = self.wheel_indices
+            wheel_forward_sign = getattr(self.cfg.asset, 'wheel_forward_sign', None)
+            if wheel_forward_sign is None:
+                self.wheel_forward_sign = torch.ones(len(self.wheel_dof_indices), dtype=torch.float, device=self.device, requires_grad=False)
+            else:
+                self.wheel_forward_sign = torch.tensor(wheel_forward_sign, dtype=torch.float, device=self.device, requires_grad=False)
+
+            wheel_dof_set = set(int(idx) for idx in self.wheel_dof_indices.detach().cpu().tolist())
+            self.leg_dof_names = list(getattr(self.cfg.asset, 'leg_dof_names', []) or [])
+            if self.leg_dof_names:
+                self.leg_dof_indices = self._indices_from_names(self.dof_names, self.leg_dof_names, 'leg DOF')
+            else:
+                self.leg_dof_names = [name for i, name in enumerate(self.dof_names) if i not in wheel_dof_set]
+                self.leg_dof_indices = torch.tensor(
+                    [i for i in range(len(self.dof_names)) if i not in wheel_dof_set],
+                    dtype=torch.long, device=self.device,
+                )
+
+            rigid_body_names = self.gym.get_actor_rigid_body_names(self.envs[0], self.actor_handles[0])
+            wheel_body_names = list(getattr(self.cfg.asset, 'wheel_body_names', []) or [])
+            if not wheel_body_names:
+                wheel_body_patterns = getattr(self.cfg.asset, 'wheel_body_name', None)
+                if wheel_body_patterns:
+                    wheel_body_patterns = wheel_body_patterns if isinstance(wheel_body_patterns, list) else [wheel_body_patterns]
+                    wheel_body_names = self._matching_names(rigid_body_names, wheel_body_patterns)
+            if wheel_body_names:
+                self.wheel_body_names = wheel_body_names
+                self.wheel_body_indices = torch.tensor(
+                    [self.gym.find_actor_rigid_body_handle(self.envs[0], self.actor_handles[0], name) for name in wheel_body_names],
+                    dtype=torch.long, device=self.device,
+                )
+
+                wheel_body_set = set(int(idx) for idx in self.wheel_body_indices.detach().cpu().tolist())
+                leg_foot_names = [
+                    name for i, name in enumerate(rigid_body_names)
+                    if i not in wheel_body_set and ('foot' in name.lower() or 'calf' in name.lower())
+                ]
+                if not leg_foot_names:
+                    leg_foot_names = [
+                        name for i, name in enumerate(rigid_body_names)
+                        if i not in wheel_body_set and ('thigh' in name.lower() or 'calf' in name.lower())
+                    ]
+                self.leg_foot_names = leg_foot_names
+                self.leg_foot_indices = torch.zeros(len(leg_foot_names), dtype=torch.long, device=self.device, requires_grad=False)
+                for i, name in enumerate(leg_foot_names):
+                    self.leg_foot_indices[i] = self.gym.find_actor_rigid_body_handle(self.envs[0], self.actor_handles[0], name)
 
     def _get_env_origins(self):
         """ Sets environment origins. On rough terrain the origins are defined by the terrain platforms.
@@ -1530,31 +1625,84 @@ class LeggedRobot(BaseTask):
 
         return feet_height
 
+    def _get_heights_at_points(self, points_xy):
+        if self.cfg.terrain.mesh_type == 'plane':
+            return torch.zeros(points_xy.shape[:2], dtype=torch.float, device=self.device)
+        if not hasattr(self, 'height_samples') or not hasattr(self, 'terrain'):
+            return torch.mean(self.measured_heights, dim=1, keepdim=True).repeat(1, points_xy.shape[1])
+
+        points = points_xy + self.terrain.cfg.border_size
+        points = (points / self.terrain.cfg.horizontal_scale).long()
+        px = torch.clip(points[:, :, 0].reshape(-1), 0, self.height_samples.shape[0] - 2)
+        py = torch.clip(points[:, :, 1].reshape(-1), 0, self.height_samples.shape[1] - 2)
+
+        heights1 = self.height_samples[px, py]
+        heights2 = self.height_samples[px + 1, py]
+        heights3 = self.height_samples[px, py + 1]
+        heights = torch.min(torch.min(heights1, heights2), heights3)
+        return heights.view(points_xy.shape[0], points_xy.shape[1]) * self.terrain.cfg.vertical_scale
+
+    def _get_obstacle_ahead_mask(self):
+        distances = getattr(self.cfg.rewards, 'obstacle_probe_distances', [0.25, 0.40, 0.55, 0.70])
+        distances = torch.tensor(distances, dtype=torch.float, device=self.device)
+        if distances.numel() == 0:
+            return torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)
+
+        heading = self._get_base_yaw() + self.commands[:, 2]
+        forward = torch.stack((torch.cos(heading), torch.sin(heading)), dim=1)
+        points_xy = self.root_states[:, None, :2] + forward[:, None, :] * distances[None, :, None]
+        ahead_heights = self._get_heights_at_points(points_xy)
+        terrain_height_now = self._get_heights_at_points(self.root_states[:, None, :2])[:, 0]
+
+        return self._compute_obstacle_mask_from_heights(terrain_height_now, ahead_heights)
+
+    def _compute_obstacle_mask_from_heights(self, h_now, h_ahead):
+        height_diff = h_ahead - h_now.unsqueeze(1)
+        obstacle_threshold = float(getattr(self.cfg.rewards, 'obstacle_height_threshold', 0.04))
+        gap_threshold = float(getattr(self.cfg.rewards, 'gap_height_threshold', 0.06))
+        step_or_wall = torch.any(height_diff > obstacle_threshold, dim=1)
+        gap = torch.any(height_diff < -gap_threshold, dim=1)
+        mask = step_or_wall | gap
+        if hasattr(self, 'env_terrain_idx') and mask.shape[0] == self.env_terrain_idx.shape[0]:
+            mask &= self.env_terrain_idx >= 0
+        return mask
+
     #------------ reward functions----------------
+    def _sum_leg_wheel_penalty(self, per_dof_value, wheel_weight=1.0):
+        """Sum per-DOF penalty with leg/wheel separation.
 
-    # Legacy aliases kept for old configs; go2w profiles use goal_progress directly.
-    def _reward_tracking_goal_vel(self):
-        return self._reward_goal_progress()
+        Args:
+            per_dof_value: Tensor of shape (num_envs, num_dof) with per-DOF values
+            wheel_weight: Weight multiplier for wheel DOF penalties
+        Returns:
+            Tensor of shape (num_envs,) with summed penalties
+        """
+        if not hasattr(self, 'leg_dof_indices') or not hasattr(self, 'wheel_dof_indices'):
+            return torch.sum(per_dof_value, dim=1)
 
-    def _reward_tracking_goal_vel_cmd_scaled(self):
-        return self._reward_goal_progress()
+        leg_value = per_dof_value[:, self.leg_dof_indices]
+        wheel_value = per_dof_value[:, self.wheel_dof_indices]
 
-    def _reward_goal_progress_delta(self):
-        if not bool(getattr(self.cfg.rewards, 'use_delta_goal_progress', False)) or not hasattr(self, 'goal_progress_delta_raw'):
-            return torch.zeros(self.num_envs, dtype=torch.float, device=self.device)
-        return torch.clamp(self.goal_progress_delta_raw, min=0.0)
+        reward = torch.sum(leg_value, dim=1)
+        if wheel_value.numel() > 0:
+            reward = reward + wheel_weight * torch.sum(wheel_value, dim=1)
+        return reward
 
     def _reward_goal_delta_progress(self):
         if not hasattr(self, 'prev_goal_dist') or not hasattr(self, 'curr_goal_dist'):
             return torch.zeros(self.num_envs, dtype=torch.float, device=self.device)
+
         curr_dist = self._compute_goal_distance()
         delta = self.prev_goal_dist - curr_dist
         progress_vel = delta / max(self.dt, 1e-6)
+
         max_progress = float(getattr(self.cfg.rewards, 'goal_progress_delta_max', 1.0))
         reward = torch.clamp(progress_vel, 0.0, max_progress)
+
         self.curr_goal_dist[:] = curr_dist
-        self.goal_progress_delta_raw[:] = reward
         self.prev_goal_dist[:] = curr_dist
+        # goal_progress_delta_raw is written by _prepare_goal_alignment_rewards
+
         return reward
 
     def _reward_delta_yaw_progress(self):
@@ -1564,22 +1712,6 @@ class LeggedRobot(BaseTask):
         delta = self.prev_abs_delta_yaw - curr
         self.prev_abs_delta_yaw[:] = curr
         return torch.clamp(delta, -0.2, 0.2)
-
-    def _reward_success_bonus(self):
-        if not bool(getattr(self.cfg.rewards, 'success_bonus_once', False)) or not hasattr(self, 'goal_success_event'):
-            return torch.zeros(self.num_envs, dtype=torch.float, device=self.device)
-        return self.goal_success_event.float()
-
-    def _reward_early_success(self):
-        if not bool(getattr(self.cfg.rewards, 'use_time_penalty', False)) or not hasattr(self, 'goal_success_event'):
-            return torch.zeros(self.num_envs, dtype=torch.float, device=self.device)
-        progress_ratio = 1.0 - self.episode_length_buf.float() / float(self.max_episode_length)
-        return torch.clamp(progress_ratio, min=0.0, max=1.0) * self.goal_success_event.float()
-
-    def _reward_time_penalty(self):
-        if not bool(getattr(self.cfg.rewards, 'use_time_penalty', False)):
-            return torch.zeros(self.num_envs, dtype=torch.float, device=self.device)
-        return torch.ones(self.num_envs, dtype=torch.float, device=self.device)
 
     def _get_goal_progress_state(self):
         zeros = torch.zeros(self.num_envs, dtype=torch.float, device=self.device)
@@ -1610,52 +1742,24 @@ class LeggedRobot(BaseTask):
         reward = torch.exp(-torch.square(vel_to_goal - target_speed) / self.cfg.rewards.tracking_sigma)
         return reward
 
-    # Legacy aliases kept for old configs; go2w profiles use tracking_delta_yaw directly.
-    def _reward_tracking_goal_yaw(self):
-        return self._reward_tracking_delta_yaw()
-
-    def _reward_reach_goal(self):
-        if not hasattr(self, 'reached_goal'):
-            return torch.zeros(self.num_envs, dtype=torch.float, device=self.device)
-        reward = self.reached_goal.float()
-        if hasattr(self, 'env_has_goals'):
-            reward[~self.env_has_goals] = 0.0
-        return reward
-
-    def _reward_finish_course(self):
-        if not hasattr(self, 'cur_goal_idx') or not hasattr(self, 'reached_goal') or not hasattr(self.cfg.terrain, 'num_goals'):
-            return torch.zeros(self.num_envs, dtype=torch.float, device=self.device)
-        final_goal_reached = (self.cur_goal_idx >= self.cfg.terrain.num_goals - 1) & self.reached_goal
-        reward = final_goal_reached.float()
-        if hasattr(self, 'env_has_goals'):
-            reward[~self.env_has_goals] = 0.0
-        return reward
-
     def _reward_goal_bonus(self):
-        if hasattr(self, 'goal_reach_event') and hasattr(self, 'final_goal_event'):
-            reward = self.goal_reach_event.float()
-            final_bonus = float(getattr(self.cfg.rewards, 'final_goal_bonus', 5.0))
-            reward = reward + final_bonus * self.final_goal_event.float()
-            if hasattr(self, 'env_has_goals'):
-                reward[~self.env_has_goals] = 0.0
-            return reward
-        if not hasattr(self, 'reached_goal'):
-            return torch.zeros(self.num_envs, dtype=torch.float, device=self.device)
+        """Reward for reaching goal waypoints and final goal.
 
-        dist = self._compute_goal_distance() if hasattr(self, '_compute_goal_distance') else torch.zeros(self.num_envs, dtype=torch.float, device=self.device)
-        yaw_err = torch.abs(self.commands[:, 2]) if self.commands.shape[1] >= 3 else torch.zeros(self.num_envs, dtype=torch.float, device=self.device)
-        reached = (dist < float(getattr(self.cfg.rewards, 'goal_dist_thresh', 0.3))) & (yaw_err < float(getattr(self.cfg.rewards, 'goal_yaw_thresh', 0.4)))
-        if bool(getattr(self.cfg.rewards, 'success_bonus_once', True)) and hasattr(self, 'goal_reached_buf'):
-            reward = reached & (~self.goal_reached_buf)
-            self.goal_reached_buf |= reached
-            reward = reward.float()
-        else:
-            reward = reached.float()
-        if hasattr(self, 'cur_goal_idx') and hasattr(self.cfg.terrain, 'num_goals'):
-            final_goal_idx = int(self.cfg.terrain.num_goals) - 1
-            final_reached = (self.cur_goal_idx >= final_goal_idx) & self.reached_goal
+        Uses goal_reach_event (intermediate waypoints) and final_goal_event
+        (final goal) which are set in _update_goals().
+        """
+        reward = torch.zeros(self.num_envs, dtype=torch.float, device=self.device)
+
+        if hasattr(self, 'goal_reach_event'):
+            reward += self.goal_reach_event.float()
+
+        if hasattr(self, 'final_goal_event'):
             final_bonus = float(getattr(self.cfg.rewards, 'final_goal_bonus', 5.0))
-            reward = reward + final_bonus * final_reached.float()
+            reward += final_bonus * self.final_goal_event.float()
+
+        if hasattr(self, 'env_has_goals'):
+            reward[~self.env_has_goals] = 0.0
+
         return reward
 
     def _mask_invalid_terrain_reward(self, reward):
@@ -1663,32 +1767,71 @@ class LeggedRobot(BaseTask):
             reward[self.env_terrain_idx < 0] = 0.0
         return reward
 
-    def _reward_wheel_torque(self):
-        if not hasattr(self, 'wheel_dof_indices'):
-            return torch.zeros(self.num_envs, dtype=torch.float, device=self.device)
-        wheel_torque = self.torques[:, self.wheel_dof_indices]
-        reward = torch.sum(torch.square(wheel_torque), dim=1)
-        return self._mask_invalid_terrain_reward(reward)
+    def _compute_wheel_lateral_slip(self, wheel_vel_world, wheel_contact):
+        """ Compute lateral slip penalty for wheel bodies.
 
-    def _reward_wheel_vel_smooth(self):
-        if not hasattr(self, 'wheel_dof_indices') or not hasattr(self, 'last_dof_vel'):
-            return torch.zeros(self.num_envs, dtype=torch.float, device=self.device)
-        wheel_vel = self.dof_vel[:, self.wheel_dof_indices]
-        last_wheel_vel = self.last_dof_vel[:, self.wheel_dof_indices]
-        wheel_acc = (wheel_vel - last_wheel_vel) / self.dt
-        reward = torch.sum(torch.square(wheel_acc), dim=1)
-        return self._mask_invalid_terrain_reward(reward)
+        Args:
+            wheel_vel_world: (num_envs, num_wheels, 3) wheel velocities in world frame
+            wheel_contact: (num_envs, num_wheels) boolean wheel contact mask
+        Returns:
+            (num_envs,) lateral slip penalty per environment
+        """
+        base_quat = self.base_quat.unsqueeze(1).repeat(1, wheel_vel_world.shape[1], 1)
+        wheel_vel_body = quat_rotate_inverse(base_quat, wheel_vel_world)
+        lateral_vel = wheel_vel_body[..., 1]
+        return torch.sum(torch.square(lateral_vel) * wheel_contact.float(), dim=1)
 
     def _reward_wheel_slip(self):
         if not hasattr(self, 'wheel_body_indices') or not hasattr(self, 'rigid_body_states'):
             return torch.zeros(self.num_envs, dtype=torch.float, device=self.device)
         rigid_body_state = self.rigid_body_states.view(self.num_envs, self.num_bodies, 13)
         wheel_vel_world = rigid_body_state[:, self.wheel_body_indices, 7:10]
-        base_quat = self.base_quat.unsqueeze(1).repeat(1, len(self.wheel_body_indices), 1)
-        wheel_vel_body = quat_rotate_inverse(base_quat, wheel_vel_world)
-        lateral_vel = wheel_vel_body[..., 1]
         wheel_contact = self.contact_forces[:, self.wheel_body_indices, 2] > 1.0
-        reward = torch.sum(torch.square(lateral_vel) * wheel_contact.float(), dim=1)
+        reward = self._compute_wheel_lateral_slip(wheel_vel_world, wheel_contact)
+        return self._mask_invalid_terrain_reward(reward)
+
+    def _reward_wheel_clearance(self):
+        if not hasattr(self, 'wheel_body_indices') or not hasattr(self, 'rigid_body_states'):
+            return torch.zeros(self.num_envs, dtype=torch.float, device=self.device)
+
+        rigid_body_state = self.rigid_body_states.view(self.num_envs, self.num_bodies, 13)
+        wheel_pos = rigid_body_state[:, self.wheel_body_indices, :3]
+        terrain_h = self._get_heights_at_points(wheel_pos[..., :2])
+        margin = float(getattr(self.cfg.rewards, 'wheel_clearance_margin', 0.04))
+        target_z = terrain_h + float(getattr(self.cfg.asset, 'wheel_radius', 0.05)) + margin
+        clearance_error = torch.relu(target_z - wheel_pos[..., 2])
+
+        contact_threshold = float(getattr(self.cfg.rewards, 'contact_force_thresh', 1.0))
+        wheel_contact = torch.norm(self.contact_forces[:, self.wheel_body_indices, :], dim=-1) > contact_threshold
+        obstacle_gate = self._get_obstacle_ahead_mask().float().unsqueeze(1)
+        reward = torch.mean(obstacle_gate * (~wheel_contact).float() * torch.square(clearance_error), dim=1)
+        return self._mask_invalid_terrain_reward(reward)
+
+    def _reward_wheel_climb_drive(self):
+        if not hasattr(self, 'wheel_dof_indices') or not hasattr(self, 'wheel_body_indices'):
+            return torch.zeros(self.num_envs, dtype=torch.float, device=self.device)
+
+        wheel_vel = self.dof_vel[:, self.wheel_dof_indices]
+        wheel_forward_sign = getattr(self, 'wheel_forward_sign', torch.ones(len(self.wheel_dof_indices), dtype=torch.float, device=self.device))
+        positive_wheel_spin = torch.clamp(wheel_vel * wheel_forward_sign.unsqueeze(0), min=0.0)
+        _, progress_vel, _, moving_cmd = self._get_goal_progress_state()
+        progress_vel = torch.clamp(progress_vel, min=0.0).unsqueeze(1)
+        moving_cmd = moving_cmd.float().unsqueeze(1)
+        wheel_contact = self.contact_forces[:, self.wheel_body_indices, 2] > 1.0
+
+        reward = torch.sum(positive_wheel_spin * progress_vel * moving_cmd * wheel_contact.float(), dim=1)
+        reward *= self._get_obstacle_ahead_mask().float()
+        return self._mask_invalid_terrain_reward(reward)
+
+    def _reward_wheel_spin_without_progress(self):
+        if not hasattr(self, 'wheel_dof_indices'):
+            return torch.zeros(self.num_envs, dtype=torch.float, device=self.device)
+
+        wheel_vel = torch.abs(self.dof_vel[:, self.wheel_dof_indices]).mean(dim=1)
+        _, progress_vel, _, moving_cmd = self._get_goal_progress_state()
+        min_progress_speed = float(getattr(self.cfg.rewards, 'min_progress_speed', 0.05))
+        stuck = (progress_vel < min_progress_speed) & moving_cmd
+        reward = stuck.float() * torch.square(wheel_vel)
         return self._mask_invalid_terrain_reward(reward)
 
     def _reward_tracking_lin_vel(self):
@@ -1699,19 +1842,17 @@ class LeggedRobot(BaseTask):
             reward[self.env_has_goals] *= 0.2
         return reward
     
-    def _reward_tracking_ang_vel(self):
-        # Deprecated yaw-rate command tracking. commands[:, 2] is delta yaw.
-        return torch.zeros(self.num_envs, dtype=torch.float, device=self.device)
-
-    def _reward_tracking_heading(self):
-        return self._reward_tracking_delta_yaw()
-
     def _reward_tracking_delta_yaw(self):
         delta_yaw = self.commands[:, 2]
         return 0.5 * (torch.cos(delta_yaw) + 1.0)
 
     def _reward_yaw_rate_l2(self):
-        return torch.square(self.base_ang_vel[:, 2])
+        yaw_rate = self.base_ang_vel[:, 2]
+        if self.commands.shape[1] >= 3 and bool(getattr(self.cfg.rewards, 'yaw_rate_gate', False)):
+            delta_yaw = torch.abs(self.commands[:, 2])
+            gate = torch.clamp(1.0 - delta_yaw / float(getattr(self.cfg.rewards, 'yaw_rate_gate_scale', 0.5)), 0.0, 1.0)
+            return gate * torch.square(yaw_rate)
+        return torch.square(yaw_rate)
     
     def _reward_lin_vel_z(self):
         # Penalize z axis base linear velocity
@@ -1728,27 +1869,16 @@ class LeggedRobot(BaseTask):
     def _reward_dof_acc(self):
         # Penalize dof accelerations
         dof_acc = (self.last_dof_vel - self.dof_vel) / self.dt
-        if not hasattr(self, 'leg_dof_indices') or not hasattr(self, 'wheel_dof_indices'):
-            return torch.sum(torch.square(dof_acc), dim=1)
-        leg_acc = dof_acc[:, self.leg_dof_indices]
-        wheel_acc = dof_acc[:, self.wheel_dof_indices]
-        reward = torch.sum(torch.square(leg_acc), dim=1)
-        if wheel_acc.numel() > 0:
-            reward = reward + self.cfg.rewards.wheel_acc_weight * torch.sum(torch.square(wheel_acc), dim=1)
-        return reward
+        return self._sum_leg_wheel_penalty(
+            torch.square(dof_acc),
+            self.cfg.rewards.wheel_acc_weight
+        )
     
     def _reward_joint_power(self):
         #Penalize high power
         power = torch.abs(self.dof_vel) * torch.abs(self.torques)
-        if not hasattr(self, 'leg_dof_indices') or not hasattr(self, 'wheel_dof_indices'):
-            return torch.sum(power, dim=1)
-        leg_power = power[:, self.leg_dof_indices]
-        wheel_power = power[:, self.wheel_dof_indices]
-        reward = torch.sum(leg_power, dim=1)
-        if wheel_power.numel() > 0:
-            wheel_torque_weight = getattr(self.cfg.rewards, 'wheel_drive_torque_weight', self.cfg.rewards.wheel_torque_weight)
-            reward = reward + wheel_torque_weight * torch.sum(wheel_power, dim=1)
-        return reward
+        wheel_weight = getattr(self.cfg.rewards, 'wheel_drive_torque_weight', self.cfg.rewards.wheel_torque_weight)
+        return self._sum_leg_wheel_penalty(power, wheel_weight)
 
     def _reward_base_height(self):
         # Penalize base height away from target
@@ -1790,38 +1920,15 @@ class LeggedRobot(BaseTask):
     def _reward_action_rate(self):
         # Penalize changes in actions
         action_rate = self.last_actions - self.actions
-        if not hasattr(self, 'leg_dof_indices') or not hasattr(self, 'wheel_dof_indices'):
-            return torch.sum(torch.square(action_rate), dim=1)
-        leg_action_rate = action_rate[:, self.leg_dof_indices]
-        wheel_action_rate = action_rate[:, self.wheel_dof_indices]
-        reward = torch.sum(torch.square(leg_action_rate), dim=1)
-        if wheel_action_rate.numel() > 0:
-            reward = reward + self.cfg.rewards.wheel_action_rate_weight * torch.sum(torch.square(wheel_action_rate), dim=1)
-        return reward
-    
-    def _reward_smoothness(self):
-        # second order smoothness
-        action_delta = self.actions - self.last_actions - self.last_actions + self.last_last_actions
-        if not hasattr(self, 'leg_dof_indices') or not hasattr(self, 'wheel_dof_indices'):
-            return torch.sum(torch.square(action_delta), dim=1)
-        leg_delta = action_delta[:, self.leg_dof_indices]
-        wheel_delta = action_delta[:, self.wheel_dof_indices]
-        reward = torch.sum(torch.square(leg_delta), dim=1)
-        if wheel_delta.numel() > 0:
-            reward = reward + self.cfg.rewards.wheel_action_rate_weight * torch.sum(torch.square(wheel_delta), dim=1)
-        return reward
+        return self._sum_leg_wheel_penalty(
+            torch.square(action_rate),
+            self.cfg.rewards.wheel_action_rate_weight
+        )
     
     def _reward_torques(self):
         # Penalize torques
-        if not hasattr(self, 'leg_dof_indices') or not hasattr(self, 'wheel_dof_indices'):
-            return torch.sum(torch.square(self.torques), dim=1)
-        leg_torque = self.torques[:, self.leg_dof_indices]
-        wheel_torque = self.torques[:, self.wheel_dof_indices]
-        reward = torch.sum(torch.square(leg_torque), dim=1)
-        if wheel_torque.numel() > 0:
-            wheel_torque_weight = getattr(self.cfg.rewards, 'wheel_drive_torque_weight', self.cfg.rewards.wheel_torque_weight)
-            reward = reward + wheel_torque_weight * torch.sum(torch.square(wheel_torque), dim=1)
-        return reward
+        wheel_weight = getattr(self.cfg.rewards, 'wheel_drive_torque_weight', self.cfg.rewards.wheel_torque_weight)
+        return self._sum_leg_wheel_penalty(torch.square(self.torques), wheel_weight)
 
     def _reward_dof_vel(self):
         # Penalize dof velocities
@@ -1864,17 +1971,9 @@ class LeggedRobot(BaseTask):
 
     def _reward_torque_limits(self):
         # penalize torques too close to the limit
-        if not hasattr(self, 'leg_dof_indices') or not hasattr(self, 'wheel_dof_indices'):
-            return torch.sum((torch.abs(self.torques) - self.torque_limits*self.cfg.rewards.soft_torque_limit).clip(min=0.), dim=1)
-        leg_torques = self.torques[:, self.leg_dof_indices]
-        leg_limits = self.torque_limits[self.leg_dof_indices]
-        reward = torch.sum((torch.abs(leg_torques) - leg_limits*self.cfg.rewards.soft_torque_limit).clip(min=0.), dim=1)
-        wheel_torques = self.torques[:, self.wheel_dof_indices]
-        wheel_limits = self.torque_limits[self.wheel_dof_indices]
-        if wheel_torques.numel() > 0:
-            wheel_torque_weight = getattr(self.cfg.rewards, 'wheel_drive_torque_weight', self.cfg.rewards.wheel_torque_weight)
-            reward = reward + wheel_torque_weight * torch.sum((torch.abs(wheel_torques) - wheel_limits*self.cfg.rewards.soft_torque_limit).clip(min=0.), dim=1)
-        return reward
+        over_limit = (torch.abs(self.torques) - self.torque_limits * self.cfg.rewards.soft_torque_limit).clip(min=0.)
+        wheel_weight = getattr(self.cfg.rewards, 'wheel_drive_torque_weight', self.cfg.rewards.wheel_torque_weight)
+        return self._sum_leg_wheel_penalty(over_limit, wheel_weight)
 
     def _reward_feet_air_time(self):
         # Reward long steps

@@ -8,10 +8,10 @@ class GO2WRoughCfg(LeggedRobotCfg):
     class env(LeggedRobotCfg.env):
         num_envs = 6000
         num_actions = 16
-        num_one_step_observations = 73
+        num_one_step_observations = 57
         num_observations = num_one_step_observations * 5
-        num_one_step_privileged_obs = 263
-        num_privileged_obs = 263
+        num_one_step_privileged_obs = 247
+        num_privileged_obs = 247
 
     class commands(LeggedRobotCfg.commands):
         curriculum = True
@@ -38,13 +38,14 @@ class GO2WRoughCfg(LeggedRobotCfg):
         dynamic_friction = 0.8
         restitution = 0.
         measure_heights = True
+        terminate_on_ground_contact = True
         measured_points_x = [-0.8, -0.7, -0.6, -0.5, -0.4, -0.3, -0.2, -0.1, 0., 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8]
         measured_points_y = [-0.5, -0.4, -0.3, -0.2, -0.1, 0., 0.1, 0.2, 0.3, 0.4, 0.5]
         selected = False
         terrain_kwargs = None
         max_init_terrain_level = 5
-        terrain_length = 18.
-        terrain_width = 4.
+        terrain_length = 5.
+        terrain_width = 5.
         num_rows = 10
         num_cols = 20
         terrain_proportions = [0, 0, 0, 0, 0, 0, 0, 0]
@@ -99,6 +100,7 @@ class GO2WRoughCfg(LeggedRobotCfg):
             'RR_foot_joint': 0.0,
         }
         init_joint_angles = default_joint_angles.copy()
+        reset_to_default_pos = True
 
     class control(LeggedRobotCfg.control):
         control_type = 'P'
@@ -157,6 +159,7 @@ class GO2WRoughCfg(LeggedRobotCfg):
     class rewards(LeggedRobotCfg.rewards):
         only_positive_rewards = True
         tracking_sigma = 0.4
+        yaw_rate_gate = True
         soft_dof_pos_limit = 0.9
         soft_dof_vel_limit = 0.9
         soft_torque_limit = 1.
