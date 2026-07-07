@@ -224,6 +224,10 @@ class LeggedRobot(BaseTask):
         self.last_last_actions[env_ids] = 0.
         self.last_dof_vel[env_ids] = 0.
         self.feet_air_time[env_ids] = 0.
+        # Clear observation history so stale frames don't leak into next episode
+        self.obs_buf[env_ids] = 0.
+        if self.privileged_obs_buf is not None:
+            self.privileged_obs_buf[env_ids] = 0.
         if hasattr(self, 'leg_feet_air_time'):
             self.leg_feet_air_time[env_ids] = 0.
         self.reset_buf[env_ids] = 1
